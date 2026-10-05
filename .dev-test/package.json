@@ -1,0 +1,11 @@
+{
+  "name": "blueprint-exporter-dev-test",
+  "private": true,
+  "description": "Out-of-game test harness for the blueprint-exporter Lua modules.",
+  "scripts": {
+    "test": "node run.js"
+  },
+  "dependencies": {
+    "fengari": "^0.1.5"
+  }
+}

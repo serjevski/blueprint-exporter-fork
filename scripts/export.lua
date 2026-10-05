@@ -1,5 +1,6 @@
 -- Rekursywny eksport biblioteki blueprintów do script-output/blueprint-exporter/.
--- Drzewo: książka = katalog, blueprint/planner = plik .txt ze stringiem wymiany.
+-- Tree: a book becomes a directory, a blueprint/planner becomes a .txt with
+-- the exchange string plus a .json holding the same decoded JSON (keys lowercased and sorted).
 --
 -- Eksport jest rozłożony na ticki: klik buduje w storage.job kolejkę ścieżek
 -- indeksowych (samo wyliczenie struktury jest tanie), a process() woła
@@ -14,6 +15,7 @@
 -- na końcu: przerwany eksport zostawia stary, spójny manifest).
 local Naming = require("scripts.naming")
 local Compat = require("scripts.compat")
+local Json = require("scripts.json")
 
 local M = {}
 
@@ -33,9 +35,11 @@ local function sorted_entries(records)
   return entries
 end
 
--- Buduje płaską kolejkę liści; książki są rozwiązywane do katalogów już tu
--- (etykieta bez stringa wymiany — na 2.0 książka bez etykiety dostanie nazwę z typu).
-local function build_queue(records, source, path, rel_dir, queue, stats)
+-- The queue mixes nodes (books) with leaves (file records), so manifest.json
+-- rebuilds the directory tree instead of a list flattened into rel_dir.
+-- Node: { kind="book", source, path, rel_dir, name, children={} }
+-- Leaf: { kind="record", source, path, rel_dir, index }
+local function build_queue(records, source, path, parent_node, rel_dir, queue, stats)
   for _, entry in ipairs(sorted_entries(records)) do
     local record = entry.record
     if not record.valid or Compat.is_preview(record) then
@@ -48,12 +52,68 @@ local function build_queue(records, source, path, rel_dir, queue, stats)
         -- Książka nie dostaje własnego pliku: jej string duplikuje całą
         -- zawartość dzieci i zaśmiecałby diffy. Pusta książka nie zostawia śladu.
         local name = Naming.entry_name(entry.index, Compat.get_label(record, nil), record.type)
-        build_queue(record.contents, source, sub_path, rel_dir .. "/" .. name, queue, stats)
+        local node = {
+          kind = "book",
+          source = source,
+          path = sub_path,
+          rel_dir = rel_dir,
+          name = name,
+          children = {},
+        }
+        parent_node.children[#parent_node.children + 1] = node
+        build_queue(record.contents, source, sub_path, node, rel_dir .. "/" .. name, queue, stats)
       else
-        queue[#queue + 1] = { source = source, path = sub_path, rel_dir = rel_dir, index = entry.index }
+        local leaf = {
+          kind = "record",
+          source = source,
+          path = sub_path,
+          rel_dir = rel_dir,
+          index = entry.index,
+        }
+        parent_node.children[#parent_node.children + 1] = leaf
+        queue[#queue + 1] = leaf
       end
     end
   end
+end
+
+-- Manifest as a tree (not a flat path list): backup.ps1 can tell an empty
+-- directory left by a removed book apart from a directory holding files.
+-- Empty directories drop out -- there is nothing to clean up after an empty book.
+local function build_manifest(node)
+  local files = {}
+  local dirs = {}
+  for _, child in ipairs(node.children) do
+    if child.kind == "record" then
+      for _, file in ipairs(child.manifest_paths or {}) do
+        files[#files + 1] = file
+      end
+    else
+      local sub = build_manifest(child)
+      for _, f in ipairs(sub.files) do files[#files + 1] = child.name .. "/" .. f end
+      for _, d in ipairs(sub.dirs) do dirs[#dirs + 1] = child.name .. "/" .. d end
+      if #sub.files > 0 or #sub.dirs > 0 then
+        dirs[#dirs + 1] = child.name
+      end
+    end
+  end
+  return { files = files, dirs = dirs }
+end
+
+local function prune_empty_manifest_dirs(manifest)
+  local keep = {}
+  for _, file in ipairs(manifest.files) do
+    local prefix = ""
+    for part in file:gmatch("[^/]+") do
+      prefix = prefix .. (#prefix > 0 and "/" or "") .. part
+      keep[prefix] = true
+    end
+  end
+  local dirs = {}
+  for _, dir in ipairs(manifest.dirs) do
+    if keep[dir] then dirs[#dirs + 1] = dir end
+  end
+  return { files = manifest.files, dirs = dirs }
 end
 
 local function resolve(roots, entry)
@@ -70,17 +130,43 @@ local function resolve(roots, entry)
   return record
 end
 
+-- An exchange string is '0' + base64(zlib(JSON)). The .json file comes from
+-- inflating that payload and re-writing the same JSON with our own encoder,
+-- so the file stays readable for git: keys lowercased, sorted, fixed indents.
+-- Independent of .txt -- a broken payload only drops the .json (pcall below).
+local function to_json(exchange_string)
+  local payload = helpers.decode_string(exchange_string:sub(2))
+  return Json.encode(Json.normalize_keys(Json.decode(payload)))
+end
+
 local function finish(job, player)
+  local stats = job.stats
+  local files, dirs = {}, {}
+  for _, root_name in ipairs({ "game", "player" }) do
+    local node = job.manifest_roots and job.manifest_roots[root_name]
+    if node then
+      local manifest = prune_empty_manifest_dirs(build_manifest(node))
+      for _, file in ipairs(manifest.files) do files[#files + 1] = root_name .. "/" .. file end
+      for _, dir in ipairs(manifest.dirs) do dirs[#dirs + 1] = root_name .. "/" .. dir end
+    end
+  end
   local manifest = helpers.table_to_json({
-    format = 1,
+    format = 2,
     tick = game.tick,
-    files = job.manifest_files,
+    files = files,
+    dirs = dirs,
   })
   helpers.write_file(OUTPUT_ROOT .. "manifest.json", manifest .. "\n", false, player.index)
 
-  player.print({ "blueprint-exporter.export-done", job.stats.ok, job.stats.skipped, job.stats.failed })
-  for i = 1, math.min(#job.stats.failures, MAX_REPORTED_FAILURES) do
-    player.print({ "blueprint-exporter.export-failed-item", job.stats.failures[i] })
+  player.print({ "blueprint-exporter.export-done", stats.ok, stats.skipped, stats.failed })
+  for i = 1, math.min(#stats.failures, MAX_REPORTED_FAILURES) do
+    player.print({ "blueprint-exporter.export-failed-item", stats.failures[i] })
+  end
+  if stats.json_failed > 0 then
+    player.print({ "blueprint-exporter.export-json-failed", stats.json_failed })
+    for i = 1, math.min(#stats.json_failures, MAX_REPORTED_FAILURES) do
+      player.print({ "blueprint-exporter.export-failed-item", stats.json_failures[i] })
+    end
   end
   storage.job = nil
 end
@@ -93,16 +179,27 @@ function M.start(player)
   end
 
   local queue = {}
-  local stats = { ok = 0, skipped = 0, failed = 0, failures = {} }
-  build_queue(player.blueprints, "player", {}, "player", queue, stats)
-  build_queue(game.blueprints, "game", {}, "game", queue, stats)
+  local stats = {
+    ok = 0,
+    skipped = 0,
+    failed = 0,
+    failures = {},
+    json_failed = 0,
+    json_failures = {},
+  }
+  local roots = {
+    player = { kind = "root", name = "player", children = {} },
+    game = { kind = "root", name = "game", children = {} },
+  }
+  build_queue(player.blueprints, "player", {}, roots.player, "player", queue, stats)
+  build_queue(game.blueprints, "game", {}, roots.game, "game", queue, stats)
 
   storage.job = {
     player_index = player.index,
     queue = queue,
     pos = 1,
     next_report = PROGRESS_EVERY,
-    manifest_files = {},
+    manifest_roots = roots,
     stats = stats,
   }
   player.print({ "blueprint-exporter.export-started", #queue })
@@ -118,6 +215,10 @@ function M.process()
     storage.job = nil
     return
   end
+
+  -- the job survives save/load: one started on 0.2.0 has no .json counters
+  job.stats.json_failed = job.stats.json_failed or 0
+  job.stats.json_failures = job.stats.json_failures or {}
 
   -- odczyt player.blueprints/game.blueprints buduje tablicę referencji —
   -- raz na tick, nie raz na rekord
@@ -140,10 +241,21 @@ function M.process()
       else
         local label = Compat.get_label(record, str)
         local name = Naming.entry_name(entry.index, label, record.type)
-        local rel_path = entry.rel_dir .. "/" .. name .. ".txt"
-        helpers.write_file(OUTPUT_ROOT .. rel_path, str .. "\n", false, player.index)
-        job.manifest_files[#job.manifest_files + 1] = rel_path
+        local base = entry.rel_dir .. "/" .. name
+        helpers.write_file(OUTPUT_ROOT .. base .. ".txt", str .. "\n", false, player.index)
+        entry.manifest_paths = { name .. ".txt" }
         job.stats.ok = job.stats.ok + 1
+
+        -- .txt is the source of truth: if the payload will not decode, the
+        -- record still reaches git -- only the readable .json variant is missing
+        local json_ok, json_str = pcall(to_json, str)
+        if json_ok and type(json_str) == "string" then
+          helpers.write_file(OUTPUT_ROOT .. base .. ".json", json_str .. "\n", false, player.index)
+          entry.manifest_paths[#entry.manifest_paths + 1] = name .. ".json"
+        else
+          job.stats.json_failed = job.stats.json_failed + 1
+          job.stats.json_failures[#job.stats.json_failures + 1] = base .. ".json"
+        end
       end
     end
   end

@@ -52,6 +52,7 @@ local function build_queue(records, source, path, parent_node, rel_dir, queue, s
         -- Książka nie dostaje własnego pliku: jej string duplikuje całą
         -- zawartość dzieci i zaśmiecałby diffy. Pusta książka nie zostawia śladu.
         local name = Naming.entry_name(entry.index, Compat.get_label(record, nil), record.type)
+        name = Naming.fit(rel_dir, name, "", Naming.DIR_RESERVE)
         local node = {
           kind = "book",
           source = source,
@@ -146,8 +147,9 @@ local function finish(job, player)
     local node = job.manifest_roots and job.manifest_roots[root_name]
     if node then
       local manifest = prune_empty_manifest_dirs(build_manifest(node))
-      for _, file in ipairs(manifest.files) do files[#files + 1] = root_name .. "/" .. file end
-      for _, dir in ipairs(manifest.dirs) do dirs[#dirs + 1] = root_name .. "/" .. dir end
+      local root = Naming.root_dir(root_name)
+      for _, file in ipairs(manifest.files) do files[#files + 1] = root .. "/" .. file end
+      for _, dir in ipairs(manifest.dirs) do dirs[#dirs + 1] = root .. "/" .. dir end
     end
   end
   local manifest = helpers.table_to_json({
@@ -191,8 +193,8 @@ function M.start(player)
     player = { kind = "root", name = "player", children = {} },
     game = { kind = "root", name = "game", children = {} },
   }
-  build_queue(player.blueprints, "player", {}, roots.player, "player", queue, stats)
-  build_queue(game.blueprints, "game", {}, roots.game, "game", queue, stats)
+  build_queue(player.blueprints, "player", {}, roots.player, Naming.root_dir("player"), queue, stats)
+  build_queue(game.blueprints, "game", {}, roots.game, Naming.root_dir("game"), queue, stats)
 
   storage.job = {
     player_index = player.index,
@@ -241,6 +243,8 @@ function M.process()
       else
         local label = Compat.get_label(record, str)
         local name = Naming.entry_name(entry.index, label, record.type)
+        -- ".json" is the longer of the two extensions, so it is the one to budget for
+        name = Naming.fit(entry.rel_dir, name, ".json")
         local base = entry.rel_dir .. "/" .. name
         helpers.write_file(OUTPUT_ROOT .. base .. ".txt", str .. "\n", false, player.index)
         entry.manifest_paths = { name .. ".txt" }

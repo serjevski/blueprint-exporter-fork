@@ -99,6 +99,95 @@ check("encode: full sort + lower + collision",
 check("naming: entry_name", Naming.entry_name(1, "Test", "blueprint") == "001_Test", Naming.entry_name(1, "Test", "blueprint"))
 check("naming: forbidden chars", Naming.entry_name(7, "a/b:c*d?\"e", "blueprint") == "007_a_b_c_d__e", Naming.entry_name(7, "a/b:c*d?\"e", "blueprint"))
 check("naming: fallback on type", Naming.entry_name(3, "", "blueprint-book") == "003_blueprint-book", Naming.entry_name(3, "", "blueprint-book"))
+
+-- ---- BB-code markup must not reach the disk
+check("naming: markup stripped",
+  eq(Naming.entry_name(1, "[item=rail]CityBlocks", "blueprint"), "001_CityBlocks"))
+check("naming: closing tags stripped",
+  eq(Naming.entry_name(1, "[color=purple]Rails[/color][/font]", "blueprint"), "001_Rails"))
+check("naming: color with numbers stripped",
+  eq(Naming.entry_name(4, "[color=185,95,0]Interchanges[/color]", "blueprint"), "004_Interchanges"))
+check("naming: markup-only label falls back to type",
+  eq(Naming.entry_name(2, "[color=red][/color]", "blueprint"), "002_blueprint"))
+check("naming: spaces left by markup collapse",
+  eq(Naming.entry_name(1, "[item=x]  A   B  ", "blueprint"), "001_A B"))
+check("naming: markup inside text removed, text kept",
+  eq(Naming.entry_name(1, "A[item=x]B", "blueprint"), "001_AB"))
+-- a lone bracket is not markup and must survive
+check("naming: lone bracket kept",
+  eq(Naming.entry_name(1, "outer[", "blueprint"), "001_outer["))
+-- Factorio truncates long labels itself, and the cut can land inside a tag
+check("naming: tag truncated at end of label is removed",
+  eq(Naming.sanitize("etc[item=splitter][item=fast-insert"), "etc"))
+check("naming: tag name truncated before its = is removed",
+  eq(Naming.sanitize("Rails[_fon"), "Rails"))
+-- a bracket that does not look like a tag is text and stays
+check("naming: bracket with a space inside is kept",
+  eq(Naming.sanitize("Base [see notes"), "Base [see notes"))
+check("naming: numbered bracket is kept",
+  eq(Naming.sanitize("Block [10x10]"), "Block [10x10]"))
+check("naming: digit-only open bracket is kept",
+  eq(Naming.sanitize("Block [10"), "Block [10"))
+
+-- ---- invisible characters must not reach the disk (%c alone does not cover these)
+local INVISIBLE = {
+  { "C0 tab",        "\9" },
+  { "DEL",           "\127" },
+  { "C1 NEL",        "\194\133" },
+  { "ZWSP",          "\226\128\139" },
+  { "ZWJ",           "\226\128\141" },
+  { "RLM",           "\226\128\143" },
+  { "line separator", "\226\128\168" },
+  { "RLE bidi",      "\226\128\171" },
+  { "word joiner",   "\226\129\160" },
+  { "BOM",           "\239\187\191" },
+  { "interlinear",   "\239\191\185" },
+}
+for _, case in ipairs(INVISIBLE) do
+  check("naming: drops " .. case[1],
+    eq(Naming.entry_name(1, "a" .. case[2] .. "b", "blueprint"), "001_ab"))
+end
+
+-- ---- root directory names
+check("naming: root_dir player", eq(Naming.root_dir("player"), "p"))
+check("naming: root_dir game", eq(Naming.root_dir("game"), "g"))
+check("naming: root_dir unknown passthrough", eq(Naming.root_dir("other"), "other"))
+
+-- ---- UTF-16 counting (MAX_PATH counts units, not bytes or codepoints)
+check("naming: u16_len ascii", Naming.u16_len("abc") == 3)
+check("naming: u16_len cyrillic is 1 unit per char", Naming.u16_len("\209\156\209\156") == 2)
+check("naming: u16_len astral is 2 units", Naming.u16_len("\240\159\152\128") == 2)
+
+-- ---- path budget
+check("naming: fit leaves a short name alone",
+  eq(Naming.fit("p", "001_Short", ".json"), "001_Short"))
+check("naming: fit truncates to the budget",
+  (function()
+    local name = Naming.fit("p", "001_" .. string.rep("x", 400), ".json")
+    return Naming.u16_len("p/" .. name .. ".json") <= Naming.PATH_BUDGET,
+      Naming.u16_len("p/" .. name .. ".json")
+  end)())
+check("naming: fit keeps the whole path inside the budget at depth",
+  (function()
+    -- directories are clamped with a reserve before their children are named,
+    -- exactly as export.lua does; clamping a leaf under an over-budget
+    -- directory is not something fit can fix after the fact
+    local dir = "p"
+    for _, seg in ipairs({ string.rep("d", 100), string.rep("e", 100) }) do
+      dir = dir .. "/" .. Naming.fit(dir, seg, "", Naming.DIR_RESERVE)
+    end
+    local name = Naming.fit(dir, string.rep("n", 300), ".json")
+    local total = Naming.u16_len(dir .. "/" .. name .. ".json")
+    return total <= Naming.PATH_BUDGET and #name > 0, total
+  end)())
+check("naming: fit reserves room for children of a directory",
+  (function()
+    local dir = "p"
+    local name = Naming.fit(dir, string.rep("d", 300), "", Naming.DIR_RESERVE)
+    local child = Naming.fit(dir .. "/" .. name, string.rep("c", 300), ".json")
+    return Naming.u16_len(dir .. "/" .. name .. "/" .. child .. ".json") <= Naming.PATH_BUDGET
+      and #child > 0
+  end)())
 -- UTF-8 validator: truncating a label must not leave a partial sequence
 local function valid_utf8(s)
   local i, n = 1, #s
@@ -120,24 +209,29 @@ local function valid_utf8(s)
   return true
 end
 
-check("naming: UTF-8 truncation stays valid",
+check("naming: truncation stays valid UTF-8 at every cut",
   (function()
-    local two, three = "\209\156", "\224\164\168"
-    for tail = 0, 6 do
-      for _, unit in ipairs({ "a", two, three, " " .. two, two .. "b" .. three }) do
-        local label = "start" .. unit:rep(30):sub(1, tail * 3)
-        local name = Naming.entry_name(1, label, "blueprint")
-        if not valid_utf8(name) then return false end
-        if #name > #"001_blueprint" + 60 then return false end
+    local two, three, four = "\209\156", "\224\164\168", "\240\159\152\128"
+    for tail = 0, 12 do
+      for _, unit in ipairs({ "a", two, three, four, " " .. two, two .. "b" .. three }) do
+        -- the real pipeline: sanitize scrubs the label, fit then cuts on a
+        -- boundary. Calling fit with a raw label would skip the scrubbing.
+        local name = Naming.fit("p", Naming.entry_name(1, "start" .. unit:rep(60):sub(1, tail * 4), "blueprint"), ".json")
+        if not valid_utf8(name) then return false, name end
+        if Naming.u16_len("p/" .. name .. ".json") > Naming.PATH_BUDGET then return false, name end
       end
     end
     return true
   end)())
-check("naming: long ASCII label keeps full 60 bytes",
+check("naming: sanitize leaves no leading or trailing dot or space",
+  eq(Naming.sanitize("  .. A  B ..  "), "A B"))
+check("naming: fit does not leave a trailing dot or space when it cuts",
   (function()
-    local name = Naming.entry_name(1, string.rep("x", 100), "blueprint")
-    return name == "001_" .. string.rep("x", 60), name
+    local name = Naming.fit("p", "001_" .. string.rep("x", 200) .. " . ", ".json")
+    return not name:find("[%. ]$"), name
   end)())
+check("naming: entry_name itself no longer truncates",
+  #Naming.entry_name(1, string.rep("x", 300), "blueprint") == #"001_" + 300)
 
 -- ======================================================== compat.lua
 local rec = { valid = true, label = "test" }
@@ -263,18 +357,18 @@ local want_json = [[{
 
 local w, msgs = run_export({ make_record("Test", payload) })
 check("export: txt file with exchange string",
-  w["blueprint-exporter/player/001_Test.txt"] == "0" .. payload .. "\n",
-  tostring(w["blueprint-exporter/player/001_Test.txt"]))
+  w["blueprint-exporter/p/001_Test.txt"] == "0" .. payload .. "\n",
+  tostring(w["blueprint-exporter/p/001_Test.txt"]))
 check("export: json file with normalized JSON",
-  eq(w["blueprint-exporter/player/001_Test.json"], want_json))
+  eq(w["blueprint-exporter/p/001_Test.json"], want_json))
 check("export: json is valid JSON",
-  pcall(function() Json.decode(w["blueprint-exporter/player/001_Test.json"]) end))
+  pcall(function() Json.decode(w["blueprint-exporter/p/001_Test.json"]) end))
 
 local manifest = Json.decode(w["blueprint-exporter/manifest.json"])
 check("export: manifest has txt path",
-  (function() for _, p in ipairs(manifest.files or {}) do if p == "player/001_Test.txt" then return true end end return false end)())
+  (function() for _, p in ipairs(manifest.files or {}) do if p == "p/001_Test.txt" then return true end end return false end)())
 check("export: manifest has json path",
-  (function() for _, p in ipairs(manifest.files or {}) do if p == "player/001_Test.json" then return true end end return false end)())
+  (function() for _, p in ipairs(manifest.files or {}) do if p == "p/001_Test.json" then return true end end return false end)())
 
 local done = find_msg("blueprint-exporter.export-done", msgs)
 check("export: done message ok=1", done and done[2] == 1, tostring(done))
@@ -287,15 +381,15 @@ local book = make_record("Book", nil, "blueprint-book", { [1] = child })
 book.export_record = function() error("book has no string") end
 w, msgs = run_export({ book })
 check("export: book creates directory",
-  w["blueprint-exporter/player/001_Book/001_Child.json"] ~= nil, keys_of(w))
+  w["blueprint-exporter/p/001_Book/001_Child.json"] ~= nil, keys_of(w))
 check("export: book has no own file",
-  w["blueprint-exporter/player/001_Book.json"] == nil, keys_of(w))
+  w["blueprint-exporter/p/001_Book.json"] == nil, keys_of(w))
 
 local manifest2 = Json.decode(w["blueprint-exporter/manifest.json"])
 check("export: manifest child txt",
-  (function() for _, p in ipairs(manifest2.files or {}) do if p == "player/001_Book/001_Child.txt" then return true end end return false end)())
+  (function() for _, p in ipairs(manifest2.files or {}) do if p == "p/001_Book/001_Child.txt" then return true end end return false end)())
 check("export: manifest child json",
-  (function() for _, p in ipairs(manifest2.files or {}) do if p == "player/001_Book/001_Child.json" then return true end end return false end)())
+  (function() for _, p in ipairs(manifest2.files or {}) do if p == "p/001_Book/001_Child.json" then return true end end return false end)())
 
 -- ---- Test 3: invalid record (skipped)
 local bad = { valid = false, type = "blueprint", label = "Bad" }
@@ -306,9 +400,9 @@ check("export: invalid record skipped", skipped and skipped[3] >= 1, tostring(sk
 -- ---- Test 4: broken payload => .txt only
 w, msgs = run_export({ make_record("Broken", "not json at all") })
 check("export: broken payload writes txt",
-  w["blueprint-exporter/player/001_Broken.txt"] ~= nil, keys_of(w))
+  w["blueprint-exporter/p/001_Broken.txt"] ~= nil, keys_of(w))
 check("export: broken payload no json",
-  w["blueprint-exporter/player/001_Broken.json"] == nil, keys_of(w))
+  w["blueprint-exporter/p/001_Broken.json"] == nil, keys_of(w))
 check("export: broken payload message",
   find_msg("blueprint-exporter.export-json-failed", msgs) ~= nil,
   keys_of(msgs))
@@ -316,7 +410,7 @@ check("export: broken payload message",
 -- ---- Test 5: key normalization end-to-end
 local mixed = '{"Blueprint":{"Label":"Test","Snap-To-Grid":{"X":0,"Y":1},"Item":"belt","item":"other"}}'
 w = run_export({ make_record("Mixed", mixed) })
-local json_text = w["blueprint-exporter/player/001_Mixed.json"]
+local json_text = w["blueprint-exporter/p/001_Mixed.json"]
 local decoded = Json.decode(json_text)
 check("export: keys lowercase", decoded.blueprint.label == "Test", json_text)
 check("export: keys sorted",
@@ -331,14 +425,14 @@ check("export: no uppercase keys in output",
 -- ---- Test 6: game library
 w = run_export({}, { make_record("GameItem", '{"blueprint":{"item":"rocket"}}') })
 check("export: game library",
-  w["blueprint-exporter/game/001_GameItem.json"] ~= nil, keys_of(w))
+  w["blueprint-exporter/g/001_GameItem.json"] ~= nil, keys_of(w))
 
 -- ---- Test 7: determinism
 local first = run_export({ make_record("Test", payload) })
 local second = run_export({ make_record("Test", payload) })
 check("export: deterministic",
-  first["blueprint-exporter/player/001_Test.json"]
-    == second["blueprint-exporter/player/001_Test.json"])
+  first["blueprint-exporter/p/001_Test.json"]
+    == second["blueprint-exporter/p/001_Test.json"])
 
 print(string.format("\n%d checks, %d failures", checks, failures))
 if failures > 0 then error("tests failed", 0) end

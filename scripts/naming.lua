@@ -36,10 +36,21 @@ local function utf8_seq_len(b)
 end
 
 --- Codepoint at byte i and its byte length; length 0 marks an invalid byte.
+--- A lead byte alone is not enough: every following byte has to be a real
+--- continuation byte, otherwise "A\xC3B" reads as one character and the stray
+--- byte reaches the disk.
 local function utf8_codepoint(s, i)
-  local len = utf8_seq_len(s:byte(i))
+  local b1 = s:byte(i)
+  local len = utf8_seq_len(b1)
   if len == 0 or i + len - 1 > #s then return nil, 0 end
-  local b1, b2, b3, b4 = s:byte(i, i + 3)
+  for j = 2, len do
+    local b = s:byte(i + j - 1)
+    if b < 0x80 or b > 0xBF then return nil, 0 end
+  end
+  if len == 3 and b1 == 0xED and s:byte(i + 1) >= 0xA0 then
+    return nil, 0                       -- UTF-16 surrogate half, no valid pair
+  end
+  local b2, b3, b4 = s:byte(i + 1, i + 3)
   local cp
   if len == 1 then
     cp = b1
@@ -118,6 +129,24 @@ local MARKUP = "%[[/%a_][^%]]*%]"
 -- "[/font]"); requiring no spaces keeps "[see notes" alive.
 local MARKUP_TAIL = "%[/?[%a_][%w_%-%.]*=[^%]]*$"
 local MARKUP_TAIL_NAME = "%[/?[%a_][%w_%-%.]*$"
+
+--- Drops bytes that do not form a valid UTF-8 sequence. Anything that reaches a
+--- file must be valid UTF-8: Json.encode passes bytes through untouched, so one
+--- stray byte would make the whole file unreadable for tooling that assumes
+--- UTF-8. Markup is kept -- this is for metadata fields, sanitize is for names.
+function M.utf8_scrub(s)
+  local out, i, n = {}, 1, #s
+  while i <= n do
+    local cp, len = utf8_codepoint(s, i)
+    if not cp then
+      i = i + 1
+    else
+      out[#out + 1] = s:sub(i, i + len - 1)
+      i = i + len
+    end
+  end
+  return table.concat(out)
+end
 
 --- Label as it may appear on disk: no markup, no invisible characters, no bytes
 --- that are illegal in a Windows path, collapsed spaces, no trailing dots

@@ -225,6 +225,16 @@ check("naming: truncation stays valid UTF-8 at every cut",
   end)())
 check("naming: sanitize leaves no leading or trailing dot or space",
   eq(Naming.sanitize("  .. A  B ..  "), "A B"))
+-- utf8_scrub is for metadata fields: bytes go, markup stays
+check("naming: utf8_scrub drops invalid bytes but keeps markup",
+  eq(Naming.utf8_scrub("a" .. string.char(0xC3) .. "[b=c]"), "a[b=c]"))
+-- a lead byte is only a character if the continuation bytes are real ones
+check("naming: stray lead byte does not reach the file name",
+  eq(Naming.entry_name(1, "A" .. string.char(0xC3) .. "B", "blueprint"), "001_AB"))
+check("naming: lead byte followed by ASCII is not a character",
+  eq(Naming.sanitize(string.char(0xE2) .. "8B"), "8B"))
+check("naming: surrogate half is dropped",
+  eq(Naming.sanitize("a" .. string.char(0xED, 0xA0, 0x80) .. "b"), "ab"))
 check("naming: fit does not leave a trailing dot or space when it cuts",
   (function()
     local name = Naming.fit("p", "001_" .. string.rep("x", 200) .. " . ", ".json")
@@ -334,6 +344,10 @@ end
 -- ---- Test 1: single blueprint
 local payload = '{"blueprint":{"item":"transport-belt","label":"Test","entities":[{"entity_number":1,"name":"transport-belt","position":{"x":0.5,"y":-1.5}}],"version":17179869188,"snap-to-grid":{"orientation":{}}}}'
 local want_json = [[{
+  "_export": {
+    "book_path": [],
+    "label": "Test"
+  },
   "blueprint": {
     "entities": [
       {
@@ -414,9 +428,21 @@ local json_text = w["blueprint-exporter/p/001_Mixed.json"]
 local decoded = Json.decode(json_text)
 check("export: keys lowercase", decoded.blueprint.label == "Test", json_text)
 check("export: keys sorted",
-  json_text:find('"item"') < json_text:find('"item__2"')
-    and json_text:find('"item__2"') < json_text:find('"label"')
-    and json_text:find('"label"') < json_text:find('"snap%-to%-grid"'), json_text)
+  (function()
+    -- _export sorts before blueprint and repeats a "label" key, so the order
+    -- assertion has to look inside the blueprint object only. find() returns
+    -- two positions, so it must not be inlined into sub() -- that would cut
+    -- the slice at the end of the match.
+    local from = json_text:find('"blueprint"')
+    local body = json_text:sub(from)
+    local at = function(key)
+      local pos = body:find(key)
+      return pos or math.huge
+    end
+    return at('"item"') < at('"item__2"')
+      and at('"item__2"') < at('"label"')
+      and at('"label"') < at('"snap%-to%-grid"'), json_text
+  end)())
 check("export: collision handled",
   decoded.blueprint.item == "belt" and decoded.blueprint.item__2 == "other", json_text)
 check("export: no uppercase keys in output",
@@ -433,6 +459,89 @@ local second = run_export({ make_record("Test", payload) })
 check("export: deterministic",
   first["blueprint-exporter/p/001_Test.json"]
     == second["blueprint-exporter/p/001_Test.json"])
+
+-- ---- Test 8: _export metadata and the _book.json sidecar
+local MARKED = "[item=rail][color=purple]City Blocks[/color][/font]"
+local BOOK_MARKED = "[font=count-font]Rails[/font]"
+local marked_leaf = make_record(MARKED, '{"blueprint":{"item":"transport-belt"}}')
+local marked_book = make_record(BOOK_MARKED, nil, "blueprint-book", { [3] = marked_leaf })
+marked_book.export_record = function() error("book has no string") end
+w, msgs = run_export({ [7] = marked_book })
+
+local marked_json = w["blueprint-exporter/p/007_Rails/003_City Blocks.json"]
+check("export: markup is out of the file name", marked_json ~= nil, keys_of(w))
+local meta = marked_json and Json.decode(marked_json)._export
+check("export: _export keeps the label with markup",
+  meta ~= nil and meta.label == MARKED, meta and Json.encode(meta))
+check("export: _export.book_path is the book chain with markup",
+  meta ~= nil and #meta.book_path == 1 and meta.book_path[1] == BOOK_MARKED,
+  meta and Json.encode(meta.book_path))
+check("export: _export sorts before the payload",
+  marked_json ~= nil and marked_json:find('"_export"') < marked_json:find('"blueprint"'))
+
+local sidecar_text = w["blueprint-exporter/p/007_Rails/_book.json"]
+check("export: book writes a sidecar", sidecar_text ~= nil, keys_of(w))
+local sidecar = sidecar_text and Json.decode(sidecar_text)
+check("export: sidecar says it is a book",
+  sidecar ~= nil and sidecar.type == "blueprint-book", sidecar_text)
+check("export: sidecar keeps the book label with markup",
+  sidecar ~= nil and sidecar.label == BOOK_MARKED, sidecar_text)
+check("export: sidecar book_path is empty under a root",
+  sidecar ~= nil and #sidecar.book_path == 0, sidecar_text)
+
+local m8 = Json.decode(w["blueprint-exporter/manifest.json"])
+check("export: manifest lists the sidecar",
+  (function()
+    for _, p in ipairs(m8.files) do if p == "p/007_Rails/_book.json" then return true end end
+    return false
+  end)(), Json.encode(m8.files))
+check("export: manifest lists the book directory",
+  (function()
+    for _, p in ipairs(m8.dirs) do if p == "p/007_Rails" then return true end end
+    return false
+  end)(), Json.encode(m8.dirs))
+
+-- ---- Test 9: nested books accumulate the chain
+local deep_leaf = make_record("Deep", '{"blueprint":{"item":"pipe"}}')
+local inner = make_record("Inner", nil, "blueprint-book", { [1] = deep_leaf })
+inner.export_record = function() error("no string") end
+local outer = make_record("Outer", nil, "blueprint-book", { [1] = inner })
+outer.export_record = function() error("no string") end
+w = run_export({ outer })
+local deep_text = w["blueprint-exporter/p/001_Outer/001_Inner/001_Deep.json"]
+check("export: nested book path exists", deep_text ~= nil, keys_of(w))
+local deep_meta = deep_text and Json.decode(deep_text)._export
+check("export: nested book_path runs outer to inner",
+  deep_meta ~= nil and #deep_meta.book_path == 2
+    and deep_meta.book_path[1] == "Outer" and deep_meta.book_path[2] == "Inner",
+  deep_meta and Json.encode(deep_meta.book_path))
+local inner_side = w["blueprint-exporter/p/001_Outer/001_Inner/_book.json"]
+check("export: nested sidecar carries its ancestors",
+  (function()
+    local s = inner_side and Json.decode(inner_side)
+    return s ~= nil and #s.book_path == 1 and s.book_path[1] == "Outer"
+  end)(), inner_side)
+
+-- ---- Test 10: an empty book still leaves its name behind
+local empty_book = make_record("[color=red]Void[/color]", nil, "blueprint-book", {})
+empty_book.export_record = function() error("no string") end
+w = run_export({ empty_book })
+local void_side = w["blueprint-exporter/p/001_Void/_book.json"]
+check("export: empty book leaves a sidecar", void_side ~= nil, keys_of(w))
+check("export: empty book sidecar keeps markup in the label",
+  void_side ~= nil and Json.decode(void_side).label == "[color=red]Void[/color]", void_side)
+
+-- ---- Test 11: metadata stays valid UTF-8 even when the game label is not
+local dirty = "Bad" .. string.char(0xC3) .. "[color=red]Tag[/color]"
+local dirty_leaf = make_record(dirty, '{"blueprint":{"item":"pipe"}}')
+w = run_export({ dirty_leaf })
+local dirty_text = w["blueprint-exporter/p/001_BadTag.json"]
+check("export: label with a stray byte still writes a file", dirty_text ~= nil, keys_of(w))
+check("export: .json never contains invalid UTF-8",
+  dirty_text ~= nil and valid_utf8(dirty_text), dirty_text)
+check("export: _export keeps markup but loses the stray byte",
+  dirty_text ~= nil and Json.decode(dirty_text)._export.label == "Bad[color=red]Tag[/color]",
+  dirty_text and Json.decode(dirty_text)._export.label)
 
 print(string.format("\n%d checks, %d failures", checks, failures))
 if failures > 0 then error("tests failed", 0) end

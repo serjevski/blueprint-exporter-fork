@@ -121,6 +121,12 @@ local guard = 0
 while storage.job and guard < 200 do Export.process() guard = guard + 1 end
 
 FIXTURE_OUT = Json.encode(writes)
+
+-- Keyed by path: Json.encode writes a hand-built integer-keyed table as an
+-- object with "1"/"2" keys, not an array, so an array shape here would be a lie.
+local by_path = {}
+for _, tool in ipairs(require("scripts.tools")) do by_path[tool.path] = tool.text end
+TOOLS_OUT = Json.encode(by_path)
 `;
 
 function buildFixture() {
@@ -138,15 +144,16 @@ function buildFixture() {
     throw new Error(lua.lua_tojsstring(L, -1));
   }
   lua.lua_getglobal(L, to_luastring("FIXTURE_OUT"));
-  const encoded = lua.lua_tojsstring(L, -1);
-  const files = JSON.parse(encoded);
+  const files = JSON.parse(lua.lua_tojsstring(L, -1));
+  lua.lua_getglobal(L, to_luastring("TOOLS_OUT"));
+  const tools = JSON.parse(lua.lua_tojsstring(L, -1));
   rmrf(fixture);
   for (const [rel, content] of Object.entries(files)) {
     const target = path.join(tmp, rel.replace("blueprint-exporter", "fixture"));
     fs.mkdirSync(path.dirname(target), { recursive: true });
     fs.writeFileSync(target, content, "utf8");
   }
-  return files;
+  return { files, tools };
 }
 
 // ------------------------------------------------------------------ converters
@@ -200,7 +207,22 @@ function rel(from, p) { return path.relative(from, p).replace(/\\/g, "/"); }
 for (const d of [fixture, outPs, outSh, rawPs, rawSh]) rmrf(d);
 fs.mkdirSync(tmp, { recursive: true });
 
-const written = buildFixture();
+const built = buildFixture();
+const written = built.files;
+
+// The mod ships a second copy of each converter because Factorio cannot read a
+// file at runtime. Two copies drift unless something compares them, and only
+// this side can: Lua has no file reads.
+const embedded = Object.entries(built.tools);
+check("embedded script text matches the file in the repository",
+  embedded.length === 2 && embedded.every(([toolPath, text]) => {
+    const disk = fs.readFileSync(path.join(root, ...toolPath.split("/")), "utf8");
+    if (disk === text) return true;
+    console.log("      differs: " + toolPath +
+      " (" + Buffer.byteLength(text) + " embedded vs " +
+      Buffer.byteLength(disk) + " on disk)");
+    return false;
+  }), JSON.stringify(Object.keys(built.tools)));
 const names = Object.keys(written).sort();
 const blueprints = names.filter((n) => n.endsWith(".json") &&
   !path.basename(n).startsWith("_") && path.basename(n) !== "manifest.json");

@@ -534,6 +534,56 @@ check("export: manifest lists the book directory",
     return false
   end)(), Json.encode(m8.dirs))
 
+-- ---- converters travel inside the mod and are rewritten every export
+local Tools = require("scripts.tools")
+check("tools: module lists both converters", #Tools == 2, #Tools)
+check("export: manifest format is 3", m8.format == 3, tostring(m8.format))
+check("export: manifest lists the tools",
+  m8.tools ~= nil and #m8.tools == 2, Json.encode(m8.tools or {}))
+check("export: tools are in files too, so a pruner keeps them",
+  (function()
+    for _, tool in ipairs(Tools) do
+      local found = false
+      for _, p in ipairs(m8.files) do if p == tool.path then found = true end end
+      if not found then return false end
+    end
+    return true
+  end)(), Json.encode(m8.files))
+check("export: converter files are written verbatim",
+  (function()
+    for _, tool in ipairs(Tools) do
+      local written = w["blueprint-exporter/" .. tool.path]
+      if written ~= tool.text then return false end
+    end
+    return true
+  end)(), tostring(w["blueprint-exporter/tools/json-to-string.sh"]))
+check("export: shipped scripts keep LF endings",
+  (function()
+    for _, tool in ipairs(Tools) do
+      if tool.text:find("\r") then return false end
+    end
+    return true
+  end)())
+check("export: powershell converter ships its doc comment",
+  (Tools[1].text:sub(1, 2) == "<#"), Tools[1].text:sub(1, 10))
+check("export: bash converter ships its shebang",
+  (Tools[2].text:sub(1, 11) == "#!/usr/bin/" or Tools[2].text:sub(1, 2) == "#!"),
+  Tools[2].text:sub(1, 20))
+
+-- Even an empty library has to leave working converters behind: the whole point
+-- of rewriting them is that the user always has the current version.
+w = run_export({}, {})
+check("export: empty library still ships the converters",
+  (function()
+    for _, tool in ipairs(Tools) do
+      if w["blueprint-exporter/" .. tool.path] == nil then return false end
+    end
+    return true
+  end)(), keys_of(w))
+local m_empty = Json.decode(w["blueprint-exporter/manifest.json"])
+check("export: empty manifest still claims the tools",
+  m_empty.tools ~= nil and #m_empty.tools == 2, Json.encode(m_empty))
+
 -- ---- Test 9: nested books accumulate the chain
 local deep_leaf = make_record("Deep", '{"blueprint":{"item":"pipe"}}')
 local inner = make_record("Inner", nil, "blueprint-book", { [1] = deep_leaf })

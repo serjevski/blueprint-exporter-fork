@@ -16,6 +16,7 @@
 local Naming = require("scripts.naming")
 local Compat = require("scripts.compat")
 local Json = require("scripts.json")
+local Tools = require("scripts.tools")
 
 local M = {}
 
@@ -188,6 +189,20 @@ local function book_json(node)
   })
 end
 
+-- The converters are rewritten on every export, unconditionally. Factorio Lua
+-- cannot stat or read a file, so there is no way to ask whether the copy in
+-- script-output is current; writing them again costs two small files and
+-- guarantees the user always has the version that matches this mod.
+local function write_tools(player)
+  local paths = {}
+  for _, tool in ipairs(Tools) do
+    local ok = pcall(helpers.write_file, OUTPUT_ROOT .. tool.path, tool.text, false,
+      player.index)
+    if ok then paths[#paths + 1] = tool.path end
+  end
+  return paths
+end
+
 local function finish(job, player)
   local stats = job.stats
   local files, dirs = {}, {}
@@ -200,11 +215,18 @@ local function finish(job, player)
       for _, dir in ipairs(manifest.dirs) do dirs[#dirs + 1] = root .. "/" .. dir end
     end
   end
+  -- Listed in files as well as under tools: these paths really were written,
+  -- and a manifest that omitted them would get them deleted as orphans by the
+  -- backup script that prunes what the previous manifest claimed.
+  local tools = write_tools(player)
+  for _, path in ipairs(tools) do files[#files + 1] = path end
+
   local manifest = helpers.table_to_json({
-    format = 2,
+    format = 3,
     tick = game.tick,
     files = files,
     dirs = dirs,
+    tools = tools,
   })
   helpers.write_file(OUTPUT_ROOT .. "manifest.json", manifest .. "\n", false, player.index)
 

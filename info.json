@@ -1,0 +1,9 @@
+{
+  "name": "blueprint-exporter",
+  "version": "0.2.0",
+  "title": "Blueprint Exporter",
+  "author": "rithien",
+  "description": "Exports the entire blueprint library (My blueprints + Game blueprints) recursively to script-output as exchange strings, for git-friendly backups.",
+  "factorio_version": "2.1",
+  "dependencies": ["base >= 2.0"]
+}

@@ -73,6 +73,39 @@ check("normalize: recursion", deep.root.deep.mixed == true, Json.encode(deep))
 local once = Json.normalize_keys(Json.decode('{"Item":"x","item__2":"y"}'))
 check("normalize: untouched collisions", once.item == "x" and once.item__2 == "y", Json.encode(once))
 check("normalize: idempotent", Json.encode(Json.normalize_keys(once)) == Json.encode(once))
+check("normalize: null survives the copy",
+  eq(Json.encode(Json.normalize_keys(Json.decode('{"a":null,"b":{"c":null}}'))),
+     '{\n  "a": null,\n  "b": {\n    "c": null\n  }\n}'),
+  Json.encode(Json.normalize_keys(Json.decode('{"a":null}'))))
+check("normalize: null in an array survives",
+  eq(Json.encode(Json.normalize_keys(Json.decode('{"a":[null,1]}'))),
+     '{\n  "a": [\n    null,\n    1\n  ]\n}'))
+
+-- ---- doubles must survive the round trip, they are positions and colors
+local ROUND_TRIP = {
+  0.49803921580314636, 0.7745016813278198, 1.9999999935758013,
+  2.13e-17, -12.5, 0.1, 1 / 3, -0.000000000000000000000001,
+  3.141592653589793, 1e300, 5e-324,
+}
+for _, number in ipairs(ROUND_TRIP) do
+  check(string.format("encode: double round trip %.17g", number),
+    (function()
+      local text = Json.encode({ v = number })
+      local back = Json.decode(text).v
+      return back == number, text
+    end)())
+end
+check("encode: short values stay short",
+  eq(Json.encode({ a = 0.5, b = 0.1, c = 12.5 }),
+     '{\n  "a": 0.5,\n  "b": 0.1,\n  "c": 12.5\n}'),
+  Json.encode({ a = 0.5, b = 0.1, c = 12.5 }))
+check("encode: full pipeline keeps doubles exact",
+  (function()
+    local src = '{"blueprint":{"color":[0.49803921580314636,0.7745016813278198]}}'
+    local out = Json.encode(Json.normalize_keys(Json.decode(src)))
+    local decoded = Json.decode(out).blueprint.color
+    return decoded[1] == 0.49803921580314636 and decoded[2] == 0.7745016813278198, out
+  end)())
 check("normalize: array preserved",
   Json.encode(Json.normalize_keys(Json.decode('{"a":[1,2,3]}'))) == '{\n  "a": [\n    1,\n    2,\n    3\n  ]\n}')
 check("normalize: empty array preserved",

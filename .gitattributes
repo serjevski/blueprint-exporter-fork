@@ -1,0 +1,6 @@
+# The mod embeds the text of tools/*.sh and tools/*.ps1 verbatim to write it
+# into script-output, and a byte comparison in the tests ties the embedded copy
+# to the file in the repository. bash also refuses a CRLF shebang line. So these
+# two must keep LF on checkout regardless of core.autocrlf.
+*.sh  text eol=lf
+*.ps1 text eol=lf

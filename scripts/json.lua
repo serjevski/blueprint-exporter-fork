@@ -223,6 +223,9 @@ end
 --- __2, __3, ... suffixes.
 function M.normalize_keys(value)
   if type(value) ~= "table" then return value end
+  -- The null sentinel is a table, so without this guard the recursion rebuilds
+  -- it into an empty object and "null" silently becomes "{}" in the export.
+  if value == M.null then return value end
 
   if is_array(value) then
     local array = setmetatable({}, ARRAY_MT)
@@ -331,7 +334,15 @@ local function encode_number(value)
   if value == math.floor(value) and math.abs(value) < 2 ^ 53 then
     return string.format("%.0f", value)
   end
-  return string.format("%.14g", value)
+  -- "%.14g" (what Lua's tostring gives) does not survive a round trip: a color
+  -- channel written as 0.49803921580314636 came back as 0.49803921580315, so
+  -- the .json was not the blueprint it came from. Take the shortest form that
+  -- parses back to the same double, which keeps 0.5 short and 2.13e-17 exact.
+  for precision = 15, 17 do
+    local text = string.format("%." .. precision .. "g", value)
+    if tonumber(text) == value then return text end
+  end
+  return string.format("%.17g", value)
 end
 
 --- Serializes a value to JSON with byte-sorted keys and fixed indentation

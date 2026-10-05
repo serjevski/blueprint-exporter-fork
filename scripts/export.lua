@@ -48,6 +48,22 @@ end
 -- its own. It is plain strings, so storage survives save/load.
 local BOOK_FILE = "_book.json"
 
+-- How many name components a book and its deepest descendant occupy. A name is
+-- fitted once, top-down, so the only way a directory can leave room for what
+-- goes under it is to know how deep that goes.
+local function subtree_levels(records)
+  local deepest = 1
+  for _, entry in ipairs(sorted_entries(records)) do
+    local record = entry.record
+    if record.valid and not Compat.is_preview(record)
+      and record.type == "blueprint-book" then
+      local below = subtree_levels(record.contents) + 1
+      if below > deepest then deepest = below end
+    end
+  end
+  return deepest
+end
+
 local function build_queue(records, source, path, parent_node, rel_dir, label_path, queue, stats)
   for _, entry in ipairs(sorted_entries(records)) do
     local record = entry.record
@@ -63,7 +79,10 @@ local function build_queue(records, source, path, parent_node, rel_dir, label_pa
         -- z oryginalną etykietą -- jedyne miejsce, gdzie nazwa książki przeżywa.
         local label = Compat.get_label(record, nil)
         local name = Naming.entry_name(entry.index, label, record.type)
-        name = Naming.fit(rel_dir, name, "", Naming.DIR_RESERVE)
+        -- +1: subtree_levels counts the components under the book, while fit
+        -- shares the budget over those plus the directory itself.
+        name = Naming.fit(rel_dir, name, "", Naming.DIR_RESERVE,
+          subtree_levels(record.contents) + 1)
         local node = {
           kind = "book",
           source = source,

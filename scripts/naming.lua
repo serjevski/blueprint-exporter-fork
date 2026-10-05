@@ -192,12 +192,24 @@ end
 ---@param name string candidate name
 ---@param ext? string extension that will be appended ("" for a directory)
 ---@param reserve? number room to keep free for the children of a directory
+---@param levels? number name components still to place, counting this one
 ---@return string
-function M.fit(dir, name, ext, reserve)
+function M.fit(dir, name, ext, reserve, levels)
   ext = ext or ""
   reserve = reserve or 0
+  levels = levels or 1
   local room = M.PATH_BUDGET - M.u16_len(dir) - 1 - M.u16_len(ext) - reserve
   if room < 1 then return name end           -- dir is already over budget
+  -- A directory that takes the whole remaining budget leaves nothing for the
+  -- names under it, and every one of those adds a separator to all the paths
+  -- below. A five-deep library reached 504 units that way and Factorio wrote
+  -- nothing at all, silently -- the exact failure this budget exists to stop.
+  -- So the budget is shared with the levels still to come, which is also why
+  -- the reserve for a direct child is not subtracted here: the share already
+  -- leaves room for everything underneath, child included.
+  if levels > 1 then
+    room = math.max(1, math.floor((M.PATH_BUDGET - M.u16_len(dir) - 1) / levels))
+  end
   if M.u16_len(name) <= room then return name end
   local cut = string.sub(name, 1, u16_floor(name, room))
   local trimmed = cut:gsub("[%s%.]+$", "")

@@ -213,6 +213,19 @@ check("naming: fit keeps the whole path inside the budget at depth",
     local total = Naming.u16_len(dir .. "/" .. name .. ".json")
     return total <= Naming.PATH_BUDGET and #name > 0, total
   end)())
+check("naming: fit shares the budget with the levels under it",
+  (function()
+    local a = Naming.fit("p", string.rep("d", 300), "", 0, 3)
+    local dir = "p/" .. a
+    local b = Naming.fit(dir, string.rep("c", 300), "", 0, 2)
+    local leaf = Naming.fit(dir .. "/" .. b, string.rep("l", 300), ".json")
+    local total = Naming.u16_len(dir .. "/" .. b .. "/" .. leaf .. ".json")
+    return total <= Naming.PATH_BUDGET and #a > 0 and #b > 0, total
+  end)())
+check("naming: a shared budget is smaller than a lone one",
+  #Naming.fit("p", string.rep("d", 300), "", 0, 3) < #Naming.fit("p", string.rep("d", 300), "", 0, 1))
+check("naming: one level left behaves exactly as before",
+  Naming.fit("p", string.rep("d", 300), ".json") == Naming.fit("p", string.rep("d", 300), ".json", 0, 1))
 check("naming: fit reserves room for children of a directory",
   (function()
     local dir = "p"
@@ -626,5 +639,78 @@ check("export: _export keeps markup but loses the stray byte",
   dirty_text ~= nil and Json.decode(dirty_text)._export.label == "Bad[color=red]Tag[/color]",
   dirty_text and Json.decode(dirty_text)._export.label)
 
+-- ---- Test 12: labels that clean to the same name must not share a path
+-- Over half of a real library carries markup in front of the name. Strip it and
+-- "[item=steel-plate] Roboport", "[item=copper-plate] Roboport" and a plain
+-- "Roboport" all want 001_Roboport; 46 labels in one real library collapse this
+-- way. The index prefix is the only thing keeping them apart, and a collision
+-- would be silent -- helpers.write_file just overwrites.
+local rob1 = make_record("[item=steel-plate] Roboport", '{"blueprint":{"item":"a"}}')
+local rob2 = make_record("[item=copper-plate] Roboport", '{"blueprint":{"item":"b"}}')
+local rob3 = make_record("Roboport", '{"blueprint":{"item":"c"}}')
+w = run_export({ rob1, rob2, rob3 })
+check("export: labels collapsing to one name get three paths",
+  w["blueprint-exporter/p/001_Roboport.txt"] ~= nil
+    and w["blueprint-exporter/p/002_Roboport.txt"] ~= nil
+    and w["blueprint-exporter/p/003_Roboport.txt"] ~= nil, keys_of(w))
+check("export: each copy remembers which label it came from",
+  (function()
+    for i, want in ipairs({ "[item=steel-plate] Roboport",
+                            "[item=copper-plate] Roboport", "Roboport" }) do
+      local text = w[string.format("blueprint-exporter/p/%03d_Roboport.json", i)]
+      if text == nil or Json.decode(text)._export.label ~= want then return false end
+    end
+    return true
+  end)())
+
+-- Books collapse the same way, and two books on one directory would merge their
+-- children instead of overwriting one file.
+local core1 = make_record("[color=red]Core[/color]", nil, "blueprint-book",
+  { [1] = make_record("One", '{"blueprint":{"item":"o"}}') })
+core1.export_record = function() error("no string") end
+local core2 = make_record("[color=blue]Core[/color]", nil, "blueprint-book",
+  { [1] = make_record("Two", '{"blueprint":{"item":"t"}}') })
+core2.export_record = function() error("no string") end
+w = run_export({ core1, core2 })
+check("export: books collapsing to one name get two directories",
+  w["blueprint-exporter/p/001_Core/_book.json"] ~= nil
+    and w["blueprint-exporter/p/002_Core/_book.json"] ~= nil
+    and w["blueprint-exporter/p/001_Core/001_One.txt"] ~= nil
+    and w["blueprint-exporter/p/002_Core/001_Two.txt"] ~= nil, keys_of(w))
+
+-- ---- Test 13: every written path stays inside the budget, however it is built
+-- Astral characters cost two UTF-16 units each, and a book name is repeated in
+-- every path under it, so depth and astral labels attack the budget together.
+local star = string.char(0xF0, 0x9F, 0x92, 0xA9)
+local function nest(depth, leaf)
+  local node = leaf
+  for i = 1, depth do
+    node = make_record(star .. " Book " .. i .. " " .. string.rep("глубина", 6),
+      nil, "blueprint-book", { [1] = node })
+    node.export_record = function() error("no string") end
+  end
+  return node
+end
+w = run_export({ nest(5, make_record(star .. " Leaf " .. string.rep("x", 200),
+  '{"blueprint":{"item":"pipe"}}')) })
+local over, longest = nil, 0
+for path in pairs(w) do
+  local rel = path:match("^blueprint%-exporter/(.+)$")
+  if rel and not rel:match("^tools/") then
+    local units = Naming.u16_len(rel)
+    if units > longest then longest = units end
+    if units > Naming.PATH_BUDGET then over = rel end
+  end
+end
+check("export: deep nested path exists", longest > 0, keys_of(w))
+check("export: no written path passes the UTF-16 budget",
+  over == nil, tostring(over) .. " is " .. longest)
+check("export: deep path keeps valid UTF-8 in every segment",
+  (function()
+    for path in pairs(w) do if not valid_utf8(path) then return false, path end end
+    return true
+  end)())
+
 print(string.format("\n%d checks, %d failures", checks, failures))
+if failures > 0 then error("tests failed", 0) end
 if failures > 0 then error("tests failed", 0) end

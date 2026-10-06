@@ -1,5 +1,9 @@
 # Out-of-game test harness dependencies (fengari, ~1.8 MB).
 .dev-test/node_modules/
 
+# Fixture export trees and converter output written by check_converters.js.
+.dev-test/tmp/
+
 # publish.bat output.
 publish/
+

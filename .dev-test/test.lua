@@ -66,12 +66,13 @@ check("encode: deterministic order",
     == Json.encode(Json.normalize_keys(Json.decode('{"a":2,"b":1}'))))
 
 -- ======================================================== json.lua: normalize
+-- Keys keep their case; only sorting and collision-suffixing happen.
 local n = Json.normalize_keys(Json.decode('{"A":{"B":1},"a":{"C":2}}'))
-check("normalize: collision gets suffix", n.a.b == 1 and n.a__2.c == 2, Json.encode(n))
+check("normalize: keys keep their case", n.A.B == 1 and n.a.C == 2, Json.encode(n))
 local deep = Json.normalize_keys(Json.decode('{"Root":{"Deep":{"MiXeD":true}}}'))
-check("normalize: recursion", deep.root.deep.mixed == true, Json.encode(deep))
+check("normalize: recursion", deep.Root.Deep.MiXeD == true, Json.encode(deep))
 local once = Json.normalize_keys(Json.decode('{"Item":"x","item__2":"y"}'))
-check("normalize: untouched collisions", once.item == "x" and once.item__2 == "y", Json.encode(once))
+check("normalize: untouched collisions", once.Item == "x" and once.item__2 == "y", Json.encode(once))
 check("normalize: idempotent", Json.encode(Json.normalize_keys(once)) == Json.encode(once))
 check("normalize: null survives the copy",
   eq(Json.encode(Json.normalize_keys(Json.decode('{"a":null,"b":{"c":null}}'))),
@@ -113,19 +114,21 @@ check("normalize: empty array preserved",
 
 -- ======================================================== json.lua: full sort test
 local src = '{"Blueprint":{"Zeta":1,"alpha":2,"Item":3,"item":4,"snap-to-grid":{"Y":1,"X":0}}}'
+-- Case is preserved, so "Item" and "item" are two different keys and no
+-- collision suffix is needed. Sorted byte-wise: I < Z < a < i < s.
 local want = [[{
-  "blueprint": {
+  "Blueprint": {
+    "Item": 3,
+    "Zeta": 1,
     "alpha": 2,
-    "item": 3,
-    "item__2": 4,
+    "item": 4,
     "snap-to-grid": {
-      "x": 0,
-      "y": 1
-    },
-    "zeta": 1
+      "X": 0,
+      "Y": 1
+    }
   }
 }]]
-check("encode: full sort + lower + collision",
+check("encode: full sort, case preserved",
   eq(Json.encode(Json.normalize_keys(Json.decode(src))), want))
 
 -- ======================================================== naming.lua
@@ -472,27 +475,25 @@ local mixed = '{"Blueprint":{"Label":"Test","Snap-To-Grid":{"X":0,"Y":1},"Item":
 w = run_export({ make_record("Mixed", mixed) })
 local json_text = w["blueprint-exporter/p/001_Mixed.json"]
 local decoded = Json.decode(json_text)
-check("export: keys lowercase", decoded.blueprint.label == "Test", json_text)
+check("export: keys preserve case", decoded.Blueprint.Label == "Test", json_text)
 check("export: keys sorted",
   (function()
-    -- _export sorts before blueprint and repeats a "label" key, so the order
-    -- assertion has to look inside the blueprint object only. find() returns
-    -- two positions, so it must not be inlined into sub() -- that would cut
-    -- the slice at the end of the match.
-    local from = json_text:find('"blueprint"')
+    -- _export sorts before Blueprint (underscore < uppercase in ASCII), so the
+    -- assertion looks inside the Blueprint object only. Use plain=3 to treat
+    -- pattern characters like '-' in "Snap-To-Grid" as literals.
+    local from = json_text:find('"Blueprint"')
     local body = json_text:sub(from)
     local at = function(key)
-      local pos = body:find(key)
+      local pos = body:find(key, 1, true)
       return pos or math.huge
     end
-    return at('"item"') < at('"item__2"')
-      and at('"item__2"') < at('"label"')
-      and at('"label"') < at('"snap%-to%-grid"'), json_text
+    -- No lowercase-folding, so "Item" and "item" are distinct keys: no collision.
+    return at('"Item"') < at('"Label"')
+      and at('"Label"') < at('"Snap-To-Grid"')
+      and at('"Snap-To-Grid"') < at('"item"'), json_text
   end)())
-check("export: collision handled",
-  decoded.blueprint.item == "belt" and decoded.blueprint.item__2 == "other", json_text)
-check("export: no uppercase keys in output",
-  not json_text:find('"%u[^"]*":'), json_text)
+check("export: two case-different keys coexist",
+  decoded.Blueprint.Item == "belt" and decoded.Blueprint.item == "other", json_text)
 
 -- ---- Test 6: game library
 w = run_export({}, { make_record("GameItem", '{"blueprint":{"item":"rocket"}}') })

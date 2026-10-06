@@ -1,6 +1,6 @@
 -- Rekursywny eksport biblioteki blueprintów do script-output/blueprint-exporter/.
 -- Tree: a book becomes a directory, a blueprint/planner becomes a .txt with
--- the exchange string plus a .json holding the same decoded JSON (keys lowercased and sorted).
+-- the exchange string plus a .json holding the same decoded JSON (keys sorted).
 --
 -- Eksport jest rozłożony na ticki: klik buduje w storage.job kolejkę ścieżek
 -- indeksowych (samo wyliczenie struktury jest tanie), a process() woła
@@ -182,11 +182,13 @@ end
 
 -- An exchange string is '0' + base64(zlib(JSON)). The .json file comes from
 -- inflating that payload and re-writing the same JSON with our own encoder,
--- so the file stays readable for git: keys lowercased, sorted, fixed indents.
+-- so the file stays readable for git: sorted keys, fixed indents, and our own
+-- fields (_label, _book) carrying the exact case we were given. Everything
+-- Factorio wrote into the record is passed through untouched.
 -- Independent of .txt -- a broken payload only drops the .json (pcall below).
 --
 -- _export carries what the file system cannot keep: the label with its markup
--- intact and the chain of book names this record sits in. It is added after
+-- intact, and the chain of book names this record sits in. It is added after
 -- normalize_keys and sorts first, because "_" precedes letters byte-wise.
 local function to_json(exchange_string, label, book_path)
   local payload = helpers.decode_string(exchange_string:sub(2))

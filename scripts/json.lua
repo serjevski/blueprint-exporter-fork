@@ -217,10 +217,12 @@ end
 
 -- ---------------------------------------------------------- key normalization
 
---- Copies a value, folding object field names to one case (lowercase).
---- Collisions after folding (e.g. Item and item) lose no data: the first key
---- in the original byte order keeps the normalized name, later ones get
---- __2, __3, ... suffixes.
+--- Copies a value, sorting object field names into byte order.
+--- Keys are NOT lowercased: Factorio's own strings are case sensitive --
+--- "Blueprint" and "blueprint" name different entities -- so folding them
+--- would corrupt the payload while pretending to tidy it.
+--- Collisions (e.g. Item and item) lose no data: the first key in the
+--- original byte order keeps its name, later ones get __2, __3, ... suffixes.
 function M.normalize_keys(value)
   if type(value) ~= "table" then return value end
   -- The null sentinel is a table, so without this guard the recursion rebuilds
@@ -242,7 +244,7 @@ function M.normalize_keys(value)
   local object = {}
   local taken = {}
   for _, key in ipairs(keys) do
-    local name = (type(key) == "string") and key:lower() or key
+    local name = key
     local final = name
     local suffix = 2
     while taken[final] do

@@ -131,17 +131,19 @@ function Compress-Zlib([byte[]]$Data) {
 
 function Get-Files([string]$Path) {
   if (Test-Path -LiteralPath $Path -PathType Leaf) {
-    return ,@(Get-Item -LiteralPath $Path)
+    return Get-Item -LiteralPath $Path
   }
   if (-not (Test-Path -LiteralPath $Path -PathType Container)) {
     throw "no such file or directory: $Path"
   }
   # Square brackets appear in exported names, so every path access has to stay
   # literal; -Filter is safe because it matches names, not paths.
-  $all = Get-ChildItem -LiteralPath $Path -Recurse -Filter "*.json" -File
-  return @($all | Where-Object {
-    $_.Name -notlike "_*" -and $_.Name -ne "manifest.json"
-  })
+  Get-ChildItem -LiteralPath $Path -Recurse -Filter "*.json" -File |
+    Where-Object { $_.Name -notlike "_*" -and $_.Name -ne "manifest.json" }
+  # Nothing is wrapped in an array on purpose. The caller collects with @(),
+  # which always yields something with .Count, even for a single blueprint.
+  # Returning ",@(...)" here would hand that caller an array nested inside an
+  # array, and the loop below would then receive the whole list as one "file".
 }
 
 function Convert-One($File, [string]$Root) {
@@ -168,7 +170,7 @@ function Get-RelativePath([string]$Root, [string]$Full) {
   return $Full.Substring($rootFull.Length + 1).TrimStart('\', '/')
 }
 
-$files = Get-Files $In
+$files = @(Get-Files $In)
 if ($files.Count -eq 0) {
   Write-Error "no .json files found under $In"
   exit 1

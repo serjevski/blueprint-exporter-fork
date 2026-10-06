@@ -5,8 +5,9 @@ Factorio 2.1 mod that exports your entire blueprint library to files, so you can
 ## Usage
 
 1. Install the mod and click the **Export blueprint library** button on the shortcut bar.
-2. The export lands in `script-output/blueprint-exporter/`: books become directories. Each blueprint/planner produces two files — `.txt` with the exchange string, and `.json` with the full blueprint data (keys lowercased, alphabetically sorted). Both "My blueprints" and "Game blueprints" are included. Large libraries are processed a few records per tick, so the game stays responsive.
-3. (Optional) Run `backup.ps1` to mirror the export into this repo's `blueprints/` folder and create a git commit. Deleted blueprints are removed from the mirror automatically.
+2. The export lands in `script-output/blueprint-exporter/`: books become directories. Each blueprint/planner produces two files — `.txt` with the exchange string, and `.json` with the full blueprint data (keys alphabetically sorted, case kept). Both "My blueprints" and "Game blueprints" are included. Large libraries are processed a few records per tick, so the game stays responsive.
+3. (Optional) Run `publish.ps1` to copy the mod into a zip archive ready for
+   the Factorio mods folder or the mod portal.
 
 ## What the export looks like
 
@@ -33,9 +34,11 @@ is kept in the export instead:
 - `_book.json` in a book's directory — a book has no file of its own, so this is the
   only place its name survives. An empty book gets one too.
 
-Keys in `.json` are lowercased and sorted so diffs stay readable. That is lossy for
-data the game does not name itself: mod data under `tags` can be case-sensitive, so
-**the `.txt` stays the authoritative copy** and the `.json` is the readable one.
+A name keeps the case you typed: `Belt` and `belt` are two different files.
+
+Keys in `.json` are sorted so diffs stay readable. Their case is kept: mod data under
+`tags` can be case-sensitive, and a key renamed on the way out could not be renamed
+back. **The `.txt` stays the authoritative copy** and the `.json` is the readable one.
 
 Paths are kept under 140 UTF-16 units so Windows does not refuse them; a directory
 shares what is left with everything under it, so deep book nesting cannot overflow
@@ -82,4 +85,6 @@ ships; run it after editing either script, and the suite fails if you forget.
 
 ## Build
 
-`publish.bat` creates `publish/blueprint-exporter_<version>.zip` ready for the mod portal.
+`publish.ps1` creates `publish/blueprint-exporter_<version>.zip` ready for the
+mod portal. It zips the mod root and drops the archive into
+`%APPDATA%\Factorio\mods\`.

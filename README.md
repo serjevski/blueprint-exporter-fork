@@ -50,11 +50,9 @@ shares what is left with everything under it, so deep book nesting cannot overfl
 it.
 
 ## Turning an edited .json back into a blueprint
+**NOTE: You should download tool separately from [github](https://github.com/serjevski/blueprint-exporter-fork/tree/main/tools) page**
 
-Both converters are written into `tools/` at the end of every export — they travel
-inside the mod, because Factorio's Lua cannot read a file at runtime. They rebuild an
-importable string from a `.json`; paste the result into the in-game blueprint string
-box.
+
 
 ```powershell
 # PowerShell 5.1+, one file to the clipboard
@@ -152,9 +150,7 @@ blueprint-exporter/
 
 ## Как вернуть отредактированный .json в чертёж
 
-Оба конвертера записываются в `tools/` в конце каждого экспорта — они едут внутри
-мода, потому что Lua Factorio не умеет читать файлы во время игры. Они собирают
-импортируемую строку из `.json`; результат нужно вставить в игровое поле строки чертежа.
+**Внимание! Инструменты обратной конвертации необходимо скачивать отдельно со страницы проекта на [github](https://github.com/serjevski/blueprint-exporter-fork/tree/main/tools)**
 
 ```powershell
 # PowerShell 5.1+, один файл в буфер обмена

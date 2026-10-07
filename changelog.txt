@@ -5,6 +5,7 @@ Date: 2026-10-07
     - The converters travel inside the mod and are rewritten into script-output/blueprint-exporter/tools/ at the end of every export: json-to-string.ps1 (PowerShell) and json-to-string.sh (bash) turn an edited .json back into an importable blueprint string.
     - The real name of every record survives the export: _export.label and _export.book_path in each .json, and a _book.json sidecar in every book directory. File names only ever lose the rich-text markup.
     - Added tools/rebuild-books.ps1: rebuilds a whole blueprint book from the exported directory tree, so the library (or any part of it) can go back into the game as a single book string. Runs on PowerShell 5.1 and 7 alike.
+    - Added tools/clean-orphans.ps1 and tools/clean-orphans.sh: delete the .txt/.json files that a blueprint deleted in game leaves behind under p/ and g/, using manifest.json as the source of truth. The PowerShell version runs on 5.1 and 7; the bash version needs nothing beyond bash and coreutils. Both support a dry run (-WhatIf / --dry-run).
   Changes:
     - The mod is renamed to "Blueprint Exporter Fork" (internal name blueprint-exporter-fork) and now conflicts with the original blueprint-exporter mod.
     - File and directory names are fitted to a 140 UTF-16 unit budget; a directory shares what is left with everything below it, so deep book nesting stays within the Windows path limit.

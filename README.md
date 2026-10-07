@@ -1,4 +1,8 @@
+Русская версия ниже.
+
+
 # Blueprint Exporter
+The idea for the mod and most of the implementation belong to other people who published this mod on the Factorio mod portal.
 
 Factorio 2.1 mod that exports your entire blueprint library to files, so you can keep it in git.
 
@@ -93,6 +97,7 @@ mod portal. It zips the mod root and drops the archive into
 ---
 
 # Blueprint Exporter (на русском)
+Идея мода и большая часть реализации принадлежит другим людям, опубликовавшим этот мод на портале модов Факторио
 
 Мод для Factorio 2.1, который выгружает всю библиотеку чертежей в файлы, чтобы
 её можно было хранить в git.

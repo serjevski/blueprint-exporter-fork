@@ -1,12 +1,10 @@
 {
-  "name": "blueprint-exporter-fork",
-  "version": "0.4.0",
-  "title": "Blueprint Exporter Fork",
-  "author": "rithien",
-"description": "Exports the entire blueprint library (My blueprints + Game blueprints) recursively to script-output as exchange strings, for git-friendly backups.",
-  "factorio_version": "2.1",
-  "dependencies": [
-    "base >= 2.0",
-    "! blueprint-exporter"
-  ]
+	"name" : "blueprint-exporter-fork",
+	"version" : "0.4.0",
+	"title" : "Blueprint Exporter Fork",
+	"author" : "rithien, Serjevski, KodaCode",
+	"homepage" : "https://github.com/serjevski/blueprint-exporter-fork",
+	"description" : "Exports the entire blueprint library (My blueprints + Game blueprints) recursively to script-output as exchange strings, for git-friendly backups.",
+	"factorio_version" : "2.1",
+	"dependencies" : [ "base >= 2.1", "! blueprint-exporter" ]
 }

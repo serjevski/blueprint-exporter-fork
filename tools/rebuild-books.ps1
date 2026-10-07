@@ -64,12 +64,10 @@ function Resolve-FullPath([string]$Path) {
   return [System.IO.Path]::GetFullPath([System.IO.Path]::Combine($base, $Path))
 }
 
-# Drop the _export metadata from an exported .json. The mod writes it as the
-# first key (an underscore precedes letters byte-wise) and it holds only strings
-# and an array of strings, so the closing pattern below cannot match inside one
-# of its values.
+# Drop the _export metadata from an exported .json. It is written wherever it
+# sits, so the leading comma is optional and the trailing comma is optional.
 function Remove-ExportField([string]$Text) {
-  $pattern = '(?s)"_export"\s*:\s*\{.*?\r?\n\s*\},?'
+  $pattern = '(?s),?\s*"_export"\s*:\s*\{.*?\r?\n\s*\}(,)?'
   $stripped = [regex]::Replace($Text, $pattern, "").Trim()
   if ($stripped.Length -eq 0) {
     throw "nothing left after removing _export"

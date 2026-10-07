@@ -65,14 +65,18 @@ function Read-JsonText([string]$Path) {
   # Get-Content without -Encoding Byte would apply the ANSI code page on a
   # PowerShell 5.1 that has no BOM to read, mangling every non-ASCII name.
   $bytes = Get-Content -LiteralPath $Path -Encoding Byte -ReadCount 0
-  return [System.Text.Encoding]::UTF8.GetString($bytes)
+  $text = [System.Text.Encoding]::UTF8.GetString($bytes)
+  # Strip a leading UTF-8 BOM if present (0xEF 0xBB 0xBF → U+FEFF)
+  if ($text.Length -gt 0 -and [int]$text[0] -eq 0xFEFF) {
+    $text = $text.Substring(1)
+  }
+  return $text
 }
 
 function Remove-ExportField([string]$Text) {
-  # _export is always the first key (an underscore sorts before letters) and
-  # holds only strings and an array of strings, so it contains no nested
-  # object. The closing pattern below cannot appear inside those values.
-  $pattern = '(?s)"_export"\s*:\s*\{.*?\r?\n\s*\},?'
+  # _export may appear at any position (it is added after the Factorio payload,
+  # so it lands last, but a converter reading a pre-0.5 file might find it first).
+  $pattern = '(?s),?\s*"_export"\s*:\s*\{.*?\r?\n\s*\}(,)?'
   $stripped = [regex]::Replace($Text, $pattern, "")
   return $stripped.Trim()
 }
@@ -267,20 +271,27 @@ die() { printf 'error: %s\n' "$1" >&2; exit 1; }
 usage() { sed -n '3,26p' "$0" | sed 's/^# \{0,1\}//'; }
 
 raw_json() {
-  # _export is always the first key (an underscore sorts before letters) and
-  # holds only strings and an array of strings, so no value can look like the
-  # line that closes it.
+  # Drop the "_export" block wherever it sits: first in files written before
+  # 0.5.0, last in the current layout. One line of lookahead is enough -- when
+  # the block is last, the comma on the line before it would dangle, so it is
+  # stripped from the buffered line before that line is printed.
   awk '
-    BEGIN { state = 0 }
-    state == 0 {
-      if ($0 ~ /"_export"[ \t]*:/) { state = 1; next }
-      print; next
-    }
-    state == 1 {
-      if ($0 ~ /^[ \t]*\},?[ \t]*$/) { state = 2 }
+    BEGIN { state = 0; pending = "" }
+    state == 0 && $0 ~ /"_export"[ 	]*:/ {
+      if (pending != "") { sub(/,[ 	]*$/, "", pending); print pending }
+      pending = ""
+      state = 1
       next
     }
-    { print }
+    state == 1 {
+      if ($0 ~ /^[ 	]*\},?[ 	]*$/) state = 0
+      next
+    }
+    {
+      if (pending != "") print pending
+      pending = $0
+    }
+    END { if (pending != "") print pending }
   ' "$1"
 }
 

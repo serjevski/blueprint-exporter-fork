@@ -65,10 +65,9 @@ function Read-JsonText([string]$Path) {
 }
 
 function Remove-ExportField([string]$Text) {
-  # _export is always the first key (an underscore sorts before letters) and
-  # holds only strings and an array of strings, so it contains no nested
-  # object. The closing pattern below cannot appear inside those values.
-  $pattern = '(?s)"_export"\s*:\s*\{.*?\r?\n\s*\},?'
+  # _export may appear at any position (it is added after the Factorio payload,
+  # so it lands last, but a converter reading a pre-0.5 file might find it first).
+  $pattern = '(?s),?\s*"_export"\s*:\s*\{.*?\r?\n\s*\}(,)?'
   $stripped = [regex]::Replace($Text, $pattern, "")
   return $stripped.Trim()
 }

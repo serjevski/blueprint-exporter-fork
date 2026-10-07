@@ -7,3 +7,5 @@
 # publish.bat output.
 publish/
 
+/.dev-test/
+/.dev-test/

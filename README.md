@@ -36,8 +36,9 @@ is kept in the export instead:
 
 A name keeps the case you typed: `Belt` and `belt` are two different files.
 
-Keys in `.json` are sorted so diffs stay readable. Their case is kept: mod data under
-`tags` can be case-sensitive, and a key renamed on the way out could not be renamed
+Keys in `.json` keep the order Factorio wrote them in, so a re-export does not
+shuffle every line of a hand-edited blueprint. Their case is kept: mod data under
+`metadata` is case-sensitive, and a key renamed on the way out could not be renamed
 back. **The `.txt` stays the authoritative copy** and the `.json` is the readable one.
 
 Paths are kept under 140 UTF-16 units so Windows does not refuse them; a directory

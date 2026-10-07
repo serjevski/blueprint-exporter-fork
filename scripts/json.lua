@@ -3,8 +3,8 @@
 -- helpers.json_to_table collapses [] into {} (an empty Lua table carries no
 -- type hint) and helpers.table_to_json walks pairs in hash order; either one
 -- alone would give unstable diffs in git. Our parser tags arrays with the
--- ARRAY_MT metatable and the serializer sorts keys byte-wise, so the same
--- blueprint yields a byte-identical file on every export.
+-- ARRAY_MT metatable and replays the original field order on encode, so the
+-- same blueprint yields a byte-identical file on every export.
 --
 -- No Factorio API here -- the module can be tested outside the game.
 local M = {}
@@ -13,6 +13,11 @@ local M = {}
 M.null = setmetatable({}, { __tostring = function() return "null" end })
 
 local ARRAY_MT = {}
+
+-- Reserved field name used to carry the key order from decode into encode.
+-- Cannot collide with a real Factorio JSON key. Only set on objects that
+-- actually have keys: an empty object must stay empty for next()/pairs().
+local ORDER_FIELD = "__json_key_order"
 
 --- Marks a table as a JSON array (only needed to tell an empty [] from an object).
 function M.array(items)
@@ -138,7 +143,7 @@ function M.decode(text)
 
   local function parse_object()
     take("{")
-    local object = {}
+    local object, keys = {}, {}
     skip_ws()
     if text:sub(pos, pos) == "}" then
       pos = pos + 1
@@ -152,12 +157,14 @@ function M.decode(text)
       take(":")
       skip_ws()
       object[key] = parse_value()
+      keys[#keys + 1] = key
       skip_ws()
       local c = text:sub(pos, pos)
       if c == "," then
         pos = pos + 1
       elseif c == "}" then
         pos = pos + 1
+        object[ORDER_FIELD] = keys
         return object
       else
         fail("expected ',' or '}'")
@@ -217,7 +224,9 @@ end
 
 -- ---------------------------------------------------------- key normalization
 
---- Copies a value, sorting object field names into byte order.
+--- Copies a value, replaying the field order the source JSON listed, then any
+--- key that was added later, sorted, so hand-built tables still encode
+--- deterministically.
 --- Keys are NOT lowercased: Factorio's own strings are case sensitive --
 --- "Blueprint" and "blueprint" name different entities -- so folding them
 --- would corrupt the payload while pretending to tidy it.
@@ -237,9 +246,14 @@ function M.normalize_keys(value)
     return array
   end
 
-  local keys = {}
-  for key in pairs(value) do keys[#keys + 1] = key end
-  table.sort(keys)
+  -- Use the key order the parser recorded, or fall back to sorting for a
+  -- table that was built by hand (no ORDER_FIELD).
+  local keys = value[ORDER_FIELD]
+  if not keys then
+    keys = {}
+    for key in pairs(value) do keys[#keys + 1] = key end
+    table.sort(keys)
+  end
 
   local object = {}
   local taken = {}
@@ -254,6 +268,8 @@ function M.normalize_keys(value)
     taken[final] = true
     object[final] = M.normalize_keys(value[key])
   end
+  -- Propagate the recorded order so encode can replay it on the copy.
+  if keys == value[ORDER_FIELD] then object[ORDER_FIELD] = keys end
   return object
 end
 
@@ -347,8 +363,10 @@ local function encode_number(value)
   return string.format("%.17g", value)
 end
 
---- Serializes a value to JSON with byte-sorted keys and fixed indentation
---- (two spaces by default) so the file shape stays stable between exports.
+--- Serializes a value to JSON, reproducing the key order the value carries
+--- (the order parsed from the source, or insertion order for built tables),
+--- with fixed indentation (two spaces by default) so the file shape stays
+--- stable between exports.
 function M.encode(value, indent)
   indent = indent or "  "
   local chunks = {}
@@ -380,9 +398,35 @@ function M.encode(value, indent)
         end
         chunks[#chunks + 1] = "\n" .. indent:rep(depth) .. "]"
       else
+        -- Use the recorded order when we have it, then append any key that was
+        -- added later (sorted) so that metadata injected after decode still
+        -- ends up in a deterministic place. The recorded list is copied, not
+        -- mutated: encode may run on the same table more than once.
+        local recorded = rawget(current, ORDER_FIELD)
         local keys = {}
-        for key in pairs(current) do keys[#keys + 1] = key end
-        table.sort(keys)
+        if recorded == nil then
+          for key in pairs(current) do
+            if key ~= ORDER_FIELD then keys[#keys + 1] = key end
+          end
+          table.sort(keys)
+        else
+          local listed = {}
+          -- Mark ORDER_FIELD itself as listed so it is never emitted as data.
+          listed[ORDER_FIELD] = true
+          for i = 1, #recorded do
+            local key = recorded[i]
+            if current[key] ~= nil and not listed[key] then
+              listed[key] = true
+              keys[#keys + 1] = key
+            end
+          end
+          local extras = {}
+          for key in pairs(current) do
+            if not listed[key] then extras[#extras + 1] = key end
+          end
+          table.sort(extras)
+          for i = 1, #extras do keys[#keys + 1] = extras[i] end
+        end
         if #keys == 0 then
           chunks[#chunks + 1] = "{}"
           return

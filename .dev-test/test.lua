@@ -62,8 +62,9 @@ check("encode: fractions", Json.encode({a = 0.5, b = -1.5}) == '{\n  "a": 0.5,\n
 check("encode: escaped string", Json.encode({a = 'a"b\\c\nd\te'}) == '{\n  "a": "a\\"b\\\\c\\nd\\te"\n}', Json.encode({a = 'a"b\\c\nd\te'}))
 check("encode: UTF-8 passthrough", Json.encode({a = "zaolc"}) == '{\n  "a": "zaolc"\n}', Json.encode({a = "zaolc"}))
 check("encode: deterministic order",
-  Json.encode(Json.normalize_keys(Json.decode('{"b":1,"a":2}')))
-    == Json.encode(Json.normalize_keys(Json.decode('{"a":2,"b":1}'))))
+  -- Hand-built tables have no recorded order and encode sorted (deterministic).
+  Json.encode({ a = 1, b = 2 }) == Json.encode({ b = 2, a = 1 }),
+  Json.encode({ a = 1, b = 2 }) .. " vs " .. Json.encode({ b = 2, a = 1 }))
 
 -- ======================================================== json.lua: normalize
 -- Keys keep their case; only sorting and collision-suffixing happen.
@@ -112,24 +113,25 @@ check("normalize: array preserved",
 check("normalize: empty array preserved",
   Json.encode(Json.normalize_keys(Json.decode('{"a":[],"b":{}}'))) == '{\n  "a": [],\n  "b": {}\n}')
 
--- ======================================================== json.lua: full sort test
+-- ======================================================== json.lua: order preservation
 local src = '{"Blueprint":{"Zeta":1,"alpha":2,"Item":3,"item":4,"snap-to-grid":{"Y":1,"X":0}}}'
--- Case is preserved, so "Item" and "item" are two different keys and no
--- collision suffix is needed. Sorted byte-wise: I < Z < a < i < s.
+-- The order Factorio wrote is the order the file keeps, byte for byte. Case is
+-- preserved too, so "Item" and "item" stay two distinct keys with no suffix.
 local want = [[{
   "Blueprint": {
-    "Item": 3,
     "Zeta": 1,
     "alpha": 2,
+    "Item": 3,
     "item": 4,
     "snap-to-grid": {
-      "X": 0,
-      "Y": 1
+      "Y": 1,
+      "X": 0
     }
   }
 }]]
-check("encode: full sort, case preserved",
-  eq(Json.encode(Json.normalize_keys(Json.decode(src))), want))
+check("encode: original key order preserved",
+  eq(Json.encode(Json.normalize_keys(Json.decode(src))), want),
+  Json.encode(Json.normalize_keys(Json.decode(src))))
 
 -- ======================================================== naming.lua
 check("naming: entry_name", Naming.entry_name(1, "Test", "blueprint") == "001_Test", Naming.entry_name(1, "Test", "blueprint"))
@@ -392,12 +394,12 @@ end
 
 -- ---- Test 1: single blueprint
 local payload = '{"blueprint":{"item":"transport-belt","label":"Test","entities":[{"entity_number":1,"name":"transport-belt","position":{"x":0.5,"y":-1.5}}],"version":17179869188,"snap-to-grid":{"orientation":{}}}}'
+-- blueprint keeps the order Factorio wrote; _export is added afterwards and
+-- sorts (hand-built table), so it lands after the payload.
 local want_json = [[{
-  "_export": {
-    "book_path": [],
-    "label": "Test"
-  },
   "blueprint": {
+    "item": "transport-belt",
+    "label": "Test",
     "entities": [
       {
         "entity_number": 1,
@@ -408,12 +410,14 @@ local want_json = [[{
         }
       }
     ],
-    "item": "transport-belt",
-    "label": "Test",
+    "version": 17179869188,
     "snap-to-grid": {
       "orientation": {}
-    },
-    "version": 17179869188
+    }
+  },
+  "_export": {
+    "book_path": [],
+    "label": "Test"
   }
 }
 ]]
@@ -478,19 +482,16 @@ local decoded = Json.decode(json_text)
 check("export: keys preserve case", decoded.Blueprint.Label == "Test", json_text)
 check("export: keys sorted",
   (function()
-    -- _export sorts before Blueprint (underscore < uppercase in ASCII), so the
-    -- assertion looks inside the Blueprint object only. Use plain=3 to treat
-    -- pattern characters like '-' in "Snap-To-Grid" as literals.
+    -- Keys preserve the source order (Blueprint → Label → Snap-To-Grid → Item → item).
     local from = json_text:find('"Blueprint"')
     local body = json_text:sub(from)
     local at = function(key)
       local pos = body:find(key, 1, true)
       return pos or math.huge
     end
-    -- No lowercase-folding, so "Item" and "item" are distinct keys: no collision.
-    return at('"Item"') < at('"Label"')
-      and at('"Label"') < at('"Snap-To-Grid"')
-      and at('"Snap-To-Grid"') < at('"item"'), json_text
+    return at('"Label"') < at('"Snap-To-Grid"')
+      and at('"Snap-To-Grid"') < at('"Item"')
+      and at('"Item"') < at('"item"'), json_text
   end)())
 check("export: two case-different keys coexist",
   decoded.Blueprint.Item == "belt" and decoded.Blueprint.item == "other", json_text)
@@ -523,8 +524,8 @@ check("export: _export keeps the label with markup",
 check("export: _export.book_path is the book chain with markup",
   meta ~= nil and #meta.book_path == 1 and meta.book_path[1] == BOOK_MARKED,
   meta and Json.encode(meta.book_path))
-check("export: _export sorts before the payload",
-  marked_json ~= nil and marked_json:find('"_export"') < marked_json:find('"blueprint"'))
+check("export: _export follows the payload",
+  marked_json ~= nil and marked_json:find('"_export"') > marked_json:find('"blueprint"'))
 
 local sidecar_text = w["blueprint-exporter/p/007_Rails/_book.json"]
 check("export: book writes a sidecar", sidecar_text ~= nil, keys_of(w))

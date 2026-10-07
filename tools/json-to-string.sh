@@ -35,20 +35,27 @@ die() { printf 'error: %s\n' "$1" >&2; exit 1; }
 usage() { sed -n '3,26p' "$0" | sed 's/^# \{0,1\}//'; }
 
 raw_json() {
-  # _export is always the first key (an underscore sorts before letters) and
-  # holds only strings and an array of strings, so no value can look like the
-  # line that closes it.
+  # Drop the "_export" block wherever it sits: first in files written before
+  # 0.5.0, last in the current layout. One line of lookahead is enough -- when
+  # the block is last, the comma on the line before it would dangle, so it is
+  # stripped from the buffered line before that line is printed.
   awk '
-    BEGIN { state = 0 }
-    state == 0 {
-      if ($0 ~ /"_export"[ \t]*:/) { state = 1; next }
-      print; next
-    }
-    state == 1 {
-      if ($0 ~ /^[ \t]*\},?[ \t]*$/) { state = 2 }
+    BEGIN { state = 0; pending = "" }
+    state == 0 && $0 ~ /"_export"[ 	]*:/ {
+      if (pending != "") { sub(/,[ 	]*$/, "", pending); print pending }
+      pending = ""
+      state = 1
       next
     }
-    { print }
+    state == 1 {
+      if ($0 ~ /^[ 	]*\},?[ 	]*$/) state = 0
+      next
+    }
+    {
+      if (pending != "") print pending
+      pending = $0
+    }
+    END { if (pending != "") print pending }
   ' "$1"
 }
 

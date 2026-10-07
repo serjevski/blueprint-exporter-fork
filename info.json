@@ -1,6 +1,6 @@
 {
   "name": "blueprint-exporter-fork",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "title": "Blueprint Exporter Fork",
   "author": "rithien",
 "description": "Exports the entire blueprint library (My blueprints + Game blueprints) recursively to script-output as exchange strings, for git-friendly backups.",

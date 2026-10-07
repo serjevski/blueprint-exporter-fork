@@ -56,7 +56,12 @@ function Read-JsonText([string]$Path) {
   # Get-Content without -Encoding Byte would apply the ANSI code page on a
   # PowerShell 5.1 that has no BOM to read, mangling every non-ASCII name.
   $bytes = Get-Content -LiteralPath $Path -Encoding Byte -ReadCount 0
-  return [System.Text.Encoding]::UTF8.GetString($bytes)
+  $text = [System.Text.Encoding]::UTF8.GetString($bytes)
+  # Strip a leading UTF-8 BOM if present (0xEF 0xBB 0xBF → U+FEFF)
+  if ($text.Length -gt 0 -and [int]$text[0] -eq 0xFEFF) {
+    $text = $text.Substring(1)
+  }
+  return $text
 }
 
 function Remove-ExportField([string]$Text) {

@@ -1,4 +1,11 @@
 ----------------------------------------------------------------------------------------------------
+Version: 0.4.0
+Date: 2026-10-07
+  Bugfixes:
+    - rebuild-books.ps1: the output JSON now uses the correct Factorio book schema — "blueprints" array with per-entry "index" fields, plus "item", "active_index", and "version" metadata on every nested book. This fixes the empty-book import issue.
+    - rebuild-books.ps1: fixed the last byte of the Adler-32 checksum in Compress-Zlib (was $a -shr 8 instead of $a -band 0xFF), which caused zlib decompression failures.
+    - rebuild-books.ps1 and json-to-string.ps1: UTF-8 BOM is now stripped when reading exported .json files, preventing invisible control characters from corrupting the output JSON.
+----------------------------------------------------------------------------------------------------
 Version: 0.3.0
 Date: 2026-10-07
   Features:

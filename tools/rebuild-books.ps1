@@ -41,13 +41,16 @@ $ErrorActionPreference = "Stop"
 
 # ------------------------------------------------------------------- helpers
 
-# Read the file as UTF-8 (no BOM assumed). The .NET call works on both
-# PowerShell versions: -Encoding Byte was dropped in 7, and reading without it
-# would apply the ANSI code page on 5.1, mangling every non-ASCII name.
-# Callers pass paths that already went through Resolve-FullPath, so the .NET
-# relative-path base directory never comes into play.
+# Read a .json file as UTF-8, strip a leading BOM if present, and return the
+# raw text. The .NET call works on both PowerShell versions: -Encoding Byte was
+# dropped in 7, and reading without it would apply the ANSI code page on 5.1,
+# mangling every non-ASCII name.
 function Read-JsonText([string]$Path) {
-  return [System.Text.Encoding]::UTF8.GetString([System.IO.File]::ReadAllBytes($Path))
+  $text = [System.Text.Encoding]::UTF8.GetString([System.IO.File]::ReadAllBytes($Path))
+  if ($text.Length -gt 0 -and [int]$text[0] -eq 0xFEFF) {
+    $text = $text.Substring(1)
+  }
+  return $text
 }
 
 # The .NET file APIs resolve a relative path against the process working
@@ -105,7 +108,7 @@ function Get-Adler32([byte[]]$Data) {
     $b = ($b + $a) % 65521
   }
   return @([byte](($b -shr 8) -band 0xFF), [byte]($b -band 0xFF),
-          [byte](($a -shr 8) -band 0xFF), [byte](($a -shr 8) -band 0xFF))
+          [byte](($a -shr 8) -band 0xFF), [byte]($a -band 0xFF))
 }
 
 function Compress-Zlib([byte[]]$Data) {
@@ -199,21 +202,25 @@ function Read-DirTree($dirPath) {
 
 # ------------------------------------------------------------------- tree to Factorio JSON
 
-# Build the items array of one directory: the files it holds, then its child
-# books.
+# The blueprint-exporter mod stores payloads verbatim: the file content IS one
+# Factorio item (blueprint, upgrade_planner, etc.) with its top-level key.
+# Factorio blueprint books, however, do NOT use an "items" array for their
+# contents. They use "blueprints": [ { "blueprint": {...}, "index": 0 }, ... ].
+# Each entry is keyed by the item type it represents, plus an "index" field.
+# A nested book entry is keyed "blueprint_book" and carries the same
+# blueprints/item/version structure recursively.
 #
-# A file text is already a complete item, so it goes in as it stands -- adding
-# another wrapper key would give { "blueprint": { "blueprint": ... } } and the
-# game would drop the entry.
-#
-# A child directory must be keyed blueprint_book. Under a blueprint key the game
-# reads the entry as a blueprint, finds no entities/item, and drops it, which is
-# what made imported books come out empty.
-function Get-Book-ItemsJson($node) {
+# This function emits the "blueprints" array.
+function Get-Book-BlueprintsJson($node) {
   $parts = @()
+  $index = 0
 
   foreach ($text in $node.Texts) {
-    $parts += $text
+    # $text is already the raw JSON for one item: {"blueprint":{...}} or
+    # {"upgrade_planner":{...}}. We need to inject "index":N into it,
+    # turning it into {"blueprint":{...},"index":N}.
+    $parts += $text.Substring(0, $text.LastIndexOf('}')) + ',"index":' + $index + '}'
+    $index++
   }
 
   foreach ($child in $node.Children) {
@@ -224,22 +231,26 @@ function Get-Book-ItemsJson($node) {
     } else {
       "Book"
     }
-    $parts += '{"blueprint_book":{"type":"blueprint-book","label":' +
+    $inner = '{"blueprints":' + (Get-Book-BlueprintsJson $child) +
+      ',"item":"blueprint-book","label":' +
       (ConvertTo-JsonStringLiteral $label) +
-      ',"items":' + (Get-Book-ItemsJson $child) + '}}'
+      ',"active_index":0,"version":0}'
+    $parts += '{"blueprint_book":' + $inner + ',"index":' + $index + '}'
+    $index++
   }
 
   return '[' + ($parts -join ',') + ']'
 }
 
-# The root becomes the outer book, so its own name is not lost one level down.
-# A root directory is a library shelf (p, g) rather than a book, so its name is
-# not used as a label.
+# The root becomes the outer book. A root directory is a library shelf (p, g)
+# rather than a book, so its name is not used as a label.
 function Build-Book-Json($node) {
   $label = if ($node.BookLabel) { $node.BookLabel } else { "Rebuilt books" }
-  return '{"blueprint_book":{"type":"blueprint-book","label":' +
+  return '{"blueprint_book":{"blueprints":' +
+    (Get-Book-BlueprintsJson $node) +
+    ',"item":"blueprint-book","label":' +
     (ConvertTo-JsonStringLiteral $label) +
-    ',"items":' + (Get-Book-ItemsJson $node) + '}}'
+    ',"active_index":0,"version":0}}'
 }
 
 # ------------------------------------------------------------------- encoding

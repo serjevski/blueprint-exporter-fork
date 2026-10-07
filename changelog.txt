@@ -1,0 +1,26 @@
+----------------------------------------------------------------------------------------------------
+Version: 0.3.0
+Date: 2026-10-07
+  Features:
+    - The converters travel inside the mod and are rewritten into script-output/blueprint-exporter/tools/ at the end of every export: json-to-string.ps1 (PowerShell) and json-to-string.sh (bash) turn an edited .json back into an importable blueprint string.
+    - The real name of every record survives the export: _export.label and _export.book_path in each .json, and a _book.json sidecar in every book directory. File names only ever lose the rich-text markup.
+    - Added tools/rebuild-books.ps1: rebuilds a whole blueprint book from the exported directory tree, so the library (or any part of it) can go back into the game as a single book string. Runs on PowerShell 5.1 and 7 alike.
+  Changes:
+    - The mod is renamed to "Blueprint Exporter Fork" (internal name blueprint-exporter-fork) and now conflicts with the original blueprint-exporter mod.
+    - File and directory names are fitted to a 140 UTF-16 unit budget; a directory shares what is left with everything below it, so deep book nesting stays within the Windows path limit.
+  Bugfixes:
+    - Keys in the exported .json keep their original case; folding them to lower case corrupted case-sensitive mod data under tags.
+    - json-to-string.ps1: fixed handling of a single file passed as -In.
+----------------------------------------------------------------------------------------------------
+Version: 0.2.1
+Date: 2026-10-06
+  Features:
+    - Every blueprint and planner is now also written as a decoded .json next to its .txt exchange string, produced by a deterministic encoder: the same blueprint gives a byte-identical file on every export, so git diffs stay clean.
+    - Russian translation of the mod locale.
+----------------------------------------------------------------------------------------------------
+Version: 0.2.0
+Date: 2026-10-05
+  Features:
+    - Initial release: a shortcut-bar button exports the entire blueprint library (My blueprints and Game blueprints) to script-output/blueprint-exporter/ as exchange strings, with books becoming directories.
+    - The export is spread over ticks, so large libraries do not stall the game.
+----------------------------------------------------------------------------------------------------

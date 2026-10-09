@@ -5,6 +5,9 @@ Date: 2026-10-07
     - rebuild-books.ps1: the output JSON now uses the correct Factorio book schema — "blueprints" array with per-entry "index" fields, plus "item", "active_index", and "version" metadata on every nested book. This fixes the empty-book import issue.
     - rebuild-books.ps1: fixed the last byte of the Adler-32 checksum in Compress-Zlib (was $a -shr 8 instead of $a -band 0xFF), which caused zlib decompression failures.
     - rebuild-books.ps1 and json-to-string.ps1: UTF-8 BOM is now stripped when reading exported .json files, preventing invisible control characters from corrupting the output JSON.
+    - rebuild-books.ps1: the slot an item held in game is taken from the number the mod prefixes its file and directory name with, instead of being renumbered from zero. A book with a record deleted in the middle keeps the positions it had, and a nested book keeps the slot it occupied in the book above it.
+    - rebuild-books.ps1: the prefix is converted per level rather than copied or shifted uniformly. The entries of a book are keyed from one, while the shelves player.blueprints and game.blueprints are keyed from zero, so a shelf now passes its numbers through unchanged and a book gives one up. Shifting both the same way either emptied the first slot of every book or emptied the first slot of a shelf, and in both cases every following entry landed one place to the right.
+    - rebuild-books.ps1: passing several roots to -In no longer lets two of them claim the same slot. Each shelf numbers its entries from the beginning, so a later shelf is now placed after the last slot the earlier ones took; before, the first entry of the second shelf collided with the first of the first and Factorio dropped one of the two.
 ----------------------------------------------------------------------------------------------------
 Version: 0.3.0
 Date: 2026-10-07

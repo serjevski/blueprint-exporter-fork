@@ -75,6 +75,25 @@ function Remove-ExportField([string]$Text) {
   return $stripped
 }
 
+# The mod prefixes every name it writes with the position the item occupied in
+# its parent (003_Blueprint book), so the number has to be read back rather than
+# replaced by a running counter: a book with a record deleted in the middle
+# leaves a gap, and a counter would close it and shuffle every later slot.
+#
+# What is returned is the prefix as written. Converting it to the index field of
+# the exchange string is the caller's job, because the two containers the mod
+# walks count differently: the entries of a book are keyed from 1, while the
+# shelves player.blueprints and game.blueprints are keyed from 0. Nothing in the
+# export shows this better than the real library, where no book holds a 000_
+# entry while the root of a shelf starts at 001_ with its first slot left empty.
+function Get-NameSlotIndex([string]$Name) {
+  $match = [regex]::Match($Name, '^(\d+)_')
+  if ($match.Success) {
+    return [int] $match.Groups[1].Value
+  }
+  return $null
+}
+
 # Write a string as a JSON literal. Book labels are the only text this script
 # produces itself; payload bytes are passed through untouched. Escapes are by
 # code point so the comparison cannot depend on how PowerShell coerces char.
@@ -135,14 +154,25 @@ function Compress-Zlib([byte[]]$Data) {
 
 # Walk a directory into a hashtable tree node.
 # Keys: BookLabel (string|null, from _book.json), DirLabel (string|null, from
-# the directory name), Texts (array of item JSON), Children (array of nodes).
-function Read-DirTree($dirPath) {
+# the directory name), DirIndex (int|null, the slot the book held in its
+# parent), Texts (array of @{ Index; Text } items), Children (array of nodes).
+#
+# -Nested says who the parent is: a shelf (p, g) or another book. It decides
+# whether the prefixes of everything directly inside it have to be shifted down
+# by one, so it is passed to the children as they are read and never derived
+# from the depth of the path.
+function Read-DirTree($dirPath, [switch]$Nested) {
   $node = @{
     BookLabel = $null
     DirLabel  = $null
+    DirIndex  = $null
     Texts     = @()
     Children  = @()
   }
+
+  # A name inside a book has to give up the one its container counted it with;
+  # a name inside a shelf is already numbered the way the index field wants it.
+  $shift = if ($Nested) { 1 } else { 0 }
 
   # _book.json carries no label for a book exported at the root, so the
   # directory name is the only name left. The mod prefixes it with the export
@@ -169,7 +199,11 @@ function Read-DirTree($dirPath) {
       if ($entry.Name.StartsWith('.')) {
         continue
       }
-      $child = Read-DirTree $fullPath
+      $child = Read-DirTree $fullPath -Nested
+      $raw = Get-NameSlotIndex $entry.Name
+      if ($null -ne $raw) {
+        $child.DirIndex = $raw - $shift
+      }
       if ($child.Texts.Count -gt 0 -or $child.Children.Count -gt 0 -or $child.BookLabel) {
         $node.Children += $child
       }
@@ -188,7 +222,11 @@ function Read-DirTree($dirPath) {
         continue
       }
       try {
-        $node.Texts += (Remove-ExportField (Read-JsonText $fullPath))
+        $raw = Get-NameSlotIndex $entry.Name
+        $node.Texts += @{
+          Index = if ($null -ne $raw) { $raw - $shift } else { $null }
+          Text  = Remove-ExportField (Read-JsonText $fullPath)
+        }
       } catch {
         Write-Warning "Cannot process $fullPath : $_"
       }
@@ -211,14 +249,18 @@ function Read-DirTree($dirPath) {
 # This function emits the "blueprints" array.
 function Get-Book-BlueprintsJson($node) {
   $parts = @()
-  $index = 0
+  # Names usually carry the slot they came from; this counter only fills in for
+  # the ones that do not, and it always moves past a slot an explicit index
+  # already took so the two cannot collide.
+  $next = 0
 
-  foreach ($text in $node.Texts) {
-    # $text is already the raw JSON for one item: {"blueprint":{...}} or
+  foreach ($item in $node.Texts) {
+    # $item.Text is already the raw JSON for one item: {"blueprint":{...}} or
     # {"upgrade_planner":{...}}. We need to inject "index":N into it,
     # turning it into {"blueprint":{...},"index":N}.
-    $parts += $text.Substring(0, $text.LastIndexOf('}')) + ',"index":' + $index + '}'
-    $index++
+    $slot = if ($null -ne $item.Index) { $item.Index } else { $next }
+    $parts += $item.Text.Substring(0, $item.Text.LastIndexOf('}')) + ',"index":' + $slot + '}'
+    if ($slot -ge $next) { $next = $slot + 1 }
   }
 
   foreach ($child in $node.Children) {
@@ -233,8 +275,9 @@ function Get-Book-BlueprintsJson($node) {
       ',"item":"blueprint-book","label":' +
       (ConvertTo-JsonStringLiteral $label) +
       ',"active_index":0,"version":0}'
-    $parts += '{"blueprint_book":' + $inner + ',"index":' + $index + '}'
-    $index++
+    $slot = if ($null -ne $child.DirIndex) { $child.DirIndex } else { $next }
+    $parts += '{"blueprint_book":' + $inner + ',"index":' + $slot + '}'
+    if ($slot -ge $next) { $next = $slot + 1 }
   }
 
   return '[' + ($parts -join ',') + ']'
@@ -263,9 +306,16 @@ function ConvertTo-ExchangeString([string]$Json) {
 $mergedNode = @{
   BookLabel = $null
   DirLabel  = $null
+  DirIndex  = $null
   Texts     = @()
   Children  = @()
 }
+
+# Every root numbers its slots from the beginning again, being a shelf of its
+# own. Merging the shelves into one book has to move a later shelf past the last
+# slot the earlier ones took, otherwise two entries claim one index and Factorio
+# silently drops the loser.
+$topIndex = -1
 
 foreach ($inputDir in $In) {
   $absPath = Resolve-FullPath $inputDir
@@ -275,6 +325,40 @@ foreach ($inputDir in $In) {
   }
 
   $tree = Read-DirTree $absPath
+
+  # Shift the whole shelf by the same amount so it starts right after the slot
+  # the previous shelves left off. Only entries that carry a slot take part; a
+  # name without a prefix is numbered later, by the per-book counter.
+  $lowest = $null
+  foreach ($item in $tree.Texts) {
+    if ($null -ne $item.Index -and ($null -eq $lowest -or $item.Index -lt $lowest)) {
+      $lowest = $item.Index
+    }
+  }
+  foreach ($child in $tree.Children) {
+    if ($null -ne $child.DirIndex -and ($null -eq $lowest -or $child.DirIndex -lt $lowest)) {
+      $lowest = $child.DirIndex
+    }
+  }
+
+  if ($null -ne $lowest) {
+    $offset = if ($topIndex -ge 0) { $topIndex + 1 - $lowest } else { 0 }
+    if ($offset -ne 0) {
+      foreach ($item in $tree.Texts) {
+        if ($null -ne $item.Index) { $item.Index += $offset }
+      }
+      foreach ($child in $tree.Children) {
+        if ($null -ne $child.DirIndex) { $child.DirIndex += $offset }
+      }
+    }
+    foreach ($item in $tree.Texts) {
+      if ($null -ne $item.Index -and $item.Index -gt $topIndex) { $topIndex = $item.Index }
+    }
+    foreach ($child in $tree.Children) {
+      if ($null -ne $child.DirIndex -and $child.DirIndex -gt $topIndex) { $topIndex = $child.DirIndex }
+    }
+  }
+
   $mergedNode.Texts += $tree.Texts
   $mergedNode.Children += $tree.Children
   # -In takes independent library roots. Should a root carry _book.json, the
